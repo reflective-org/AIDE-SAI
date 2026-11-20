@@ -1,0 +1,56 @@
+# Python dependencies for the coupled CESM -> TOMAS-JAX SAI model.
+#
+# Versions are the ones the production runs were made with (system python3 on an
+# H100 box, 2026-07/08). Pinned with >= rather than == because nothing here is
+# known to be version-fragile, but if a run diverges from the recorded numbers,
+# these exact versions are the first thing to reproduce:
+#     jax 0.6.2  jaxlib 0.6.2  numpy 2.2.6  xarray 2025.6.1  netCDF4 1.7.4
+#
+# GPU IS NOT OPTIONAL for a production run. Install the CUDA build of jax, not
+# the CPU wheel this file would otherwise give you:
+#     pip install --upgrade "jax[cuda12]>=0.6.2"
+# The model runs on CPU (useful for a 2-hour smoke test) but a 90-day run needs
+# a GPU -- ~33 h on one H100, and microphysics is ~94% of it.
+#
+# TWO DEPENDENCIES ARE NOT ON PyPI and are NOT installed by this file:
+#     tomas-jax    sectional aerosol microphysics    -> TOMAS_JAX_PATH
+#     jax-rrtmgp   radiative transfer                -> RRTMGP_PATH
+# Both are git submodules under models/, pinned to exact commits, and are found
+# automatically once populated; otherwise point those two variables at them. Run
+# with RAD=0 to skip radiation, and jax-rrtmgp with it.
+#
+#     git submodule update --init
+#
+# ONE OF THEM STILL NEEDS A PATCH. The submodule pins a commit, and the zenith
+# fix is in no upstream commit, so it must be applied after checkout:
+#     git -C models/jax-rrtmgp apply ../../patches/jax-rrtmgp-zenith.patch
+#         per-column solar zenith; without it RAD=1 computes nonsense in the
+#         shortwave solve rather than failing.
+# tomas-jax is pinned on the gpu-fast branch: `main` has no tomas_jax.fast, the
+# engine driver_fast.py runs on. See the README Installation section.
+#
+# The CESM h1 hourly meteorology is also not shipped (~TB). See CESM_DIR in
+# coupling.py and docs/COUPLING_VARIABLES.md for the variables required.
+
+jax>=0.6.2
+jaxlib>=0.6.2
+numpy>=2.0
+xarray>=2025.0
+netCDF4>=1.7
+# The next three are not imported by this repo. They are here because the two
+# sibling repos are CLONED beside it rather than pip-installed, so their own
+# dependencies are never resolved for you -- and each of these is needed at
+# import time, not lazily:
+#     scipy             tomas-jax physics/radiative_forcing.py
+#     diffrax           tomas_jax/__init__.py -> solvers/diffrax.py; without it
+#                       *any* `import tomas_jax` fails, RAD=0 included
+#     dataclasses-json  rrtmgp/config/radiative_transfer.py (RAD=1 only)
+scipy>=1.15
+diffrax>=0.6
+dataclasses-json>=0.6
+
+# --- analysis/plotting only (plot_run.py, gif_run.py) ---------------------
+# Not needed to run the model. cartopy pulls in GEOS/PROJ system libraries; skip
+# these two if you only want the .npz output.
+matplotlib>=3.10
+cartopy>=0.24

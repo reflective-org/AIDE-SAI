@@ -1,0 +1,40 @@
+Broadcast fix for a per-column solar zenith angle in jax-rrtmgp.
+
+radiation.py passes `zenith` as a per-column (nlat, nlon, 1) field, one solar
+angle per grid column. Upstream `sw_cell_source` assumes a scalar and does
+`toa_flux * mu` with `toa_flux` of shape (nx, ny), which against a (nx, ny, 1)
+`mu` broadcasts to (nx, ny, ny) instead of erroring cleanly -- the SW solve then
+fails downstream on a shape mismatch (or, on a square grid, silently computes
+nonsense). This drops the trailing singleton axis first and leaves the scalar
+case untouched.
+
+Applies to the pinned submodule commit, climate-analytics-lab/jax-rrtmgp
+99d2d71. Only needed when RAD=1; RAD=0 never enters the shortwave solver.
+
+This patch is REQUIRED SETUP, not an optional extra: a gitlink pins a commit,
+so the fix cannot live as a submodule working-tree edit. Apply it after
+populating the submodule:
+
+    git submodule update --init
+    git -C models/jax-rrtmgp apply ../../patches/jax-rrtmgp-zenith.patch
+
+Verify with:  grep -q mu_2d models/jax-rrtmgp/rrtmgp/rte/monochromatic_two_stream.py
+
+diff --git a/rrtmgp/rte/monochromatic_two_stream.py b/rrtmgp/rte/monochromatic_two_stream.py
+index e42add6..b9eba89 100644
+--- a/rrtmgp/rte/monochromatic_two_stream.py
++++ b/rrtmgp/rte/monochromatic_two_stream.py
+@@ -638,8 +638,11 @@ def sw_cell_source(
+   t_noscat = jnp.exp(-optical_depth / jnp.cos(zenith))
+   mu = jnp.cos(zenith)
+ 
+-  # The vertical component of incident flux at the top boundary.
+-  flux_down_direct_bc = toa_flux * mu
++  # The vertical component of incident flux at the top boundary. `zenith` may
++  # be a scalar or a per-column (nx, ny, 1) field; `toa_flux` is (nx, ny), so
++  # drop the trailing singleton axis before applying the cosine factor.
++  mu_2d = mu[..., 0] if getattr(mu, 'ndim', 0) == 3 else mu
++  flux_down_direct_bc = toa_flux * mu_2d
+ 
+   # Global recurrent accumulation for the direct-beam downward flux at the
+   # bottom cell face unraveling from the top of the atmosphere down to the

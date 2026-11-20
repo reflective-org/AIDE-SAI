@@ -1,0 +1,45 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+cff-version: 1.2.0
+title: 'AIDE-SAI: a modular dycore-aerosol-radiation coupler for stratospheric aerosol injection'
+abstract: >-
+  A GPU (JAX) coupler for stratospheric aerosol injection in which each
+  physical process - meteorology (the dycore), boundary climatology,
+  transport, aerosol microphysics, settling and radiation - sits in a
+  swappable slot filled by a numerical scheme or, in future, a learned
+  emulator. A
+  linking, i.e. which scheme fills each slot and which pinned submodule commit
+  provides it, is a preset file. Two numerical linkings ship: prescribed
+  CESM2 meteorology on the f09 grid, and jcm-strat meteorology on its T63
+  Gaussian grid, each with a monthly CESM boundary climatology, 40-bin TOMAS
+  sectional microphysics (tomas_jax.fast) for SO2, H2SO4 and sulfate aerosol
+  with continuous SO2 injection, SO2-OH chemistry, nucleation, condensation
+  and coagulation, gravitational settling of the wet H2SO4/H2O droplet through
+  an open band bottom, semi-Lagrangian transport, and RRTMGP radiative
+  transfer with Mie optics. The meteorology is prescribed, so the circulation
+  does not respond to the aerosol.
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - name: Reflective
+    address: 26 Pier Annex
+    city: San Francisco
+    country: US
+    post-code: '94105'
+    website: 'https://www.reflective.org'
+    email: media@reflective.org
+repository-code: 'https://github.com/reflective-org/AIDE-SAI'
+keywords:
+  - stratospheric aerosol injection
+  - solar radiation modification
+  - sectional aerosol microphysics
+  - TOMAS
+  - CESM
+  - JCM
+  - JAX
+  - radiative transfer
+  - RRTMGP
+license: Apache-2.0
+date-released: '' # Add date of release here
