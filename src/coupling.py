@@ -865,6 +865,16 @@ STATE_CKPT = os.environ.get('STATE_CKPT', '1') != '0'
 # on /data NFS; six concurrent runs saturated it (write queue ~2.5 s/op) and the runs waited on it. A crash now loses
 # at most N frames. Default 1 = the previous behaviour.
 CKPT_EVERY_FRAMES = max(1, int(os.environ.get('CKPT_EVERY_FRAMES', '1')))
+# CKPT_ASYNC=1 (opt-in perf switch, default 0 = write the three _ckpt files synchronously, as before): snapshot
+# the checkpoint arrays to fresh host copies on the main thread, then do the np.savez work (zip + disk, ~0.9 GB
+# state + the growing frames history per write) in ONE background writer thread while the next steps run.
+# Output-only: the state the model evolves is never touched by the writer, and each file holds exactly what the
+# synchronous path would have written for that step. The writer is joined before the next checkpoint is queued
+# (so at most one is in flight and the frames/ts/state trio is still written in the same order, state LAST, each
+# atomically via savez_atomic) and before the final coupled_* files; a writer error is re-raised on the main
+# thread at that join. The thread is non-daemon, so an exception elsewhere still lets an in-flight write finish
+# before the interpreter exits. Cost: one extra host copy of the 3-D state per checkpoint (memcpy, not disk).
+CKPT_ASYNC = os.environ.get('CKPT_ASYNC', '0') != '0'
 RESUME     = os.environ.get('RESUME', '0') != '0'
 LOG_EVERY  = int(os.environ.get('LOG_EVERY', '1'))    # progress line every N steps
 FRAME_EVERY = int(os.environ.get('FRAME_EVERY', '24'))  # save size-bin snapshot every N hours
@@ -1655,6 +1665,50 @@ def savez_atomic(path, **arrays):
     tmp = path[:-4] + '.tmp.npz'
     np.savez(tmp, **arrays)
     os.replace(tmp, path)
+
+
+class _CkptWriter:
+    """Writes checkpoint batches [(path, arrays), ...] with savez_atomic, in
+    order. CKPT_ASYNC=0: on the caller's thread, each batch entry built (its
+    thunk called) only right before its own write, exactly as the inline code
+    did. CKPT_ASYNC=1: every thunk is called on the caller's thread first (the
+    snapshot), then the writes run in one background thread; submit() and
+    join() wait for the previous batch and re-raise its error, if any."""
+    def __init__(self, async_):
+        self.async_ = async_
+        self._th = None
+        self._err = None
+        self.t_wait = 0.0          # main-thread seconds spent waiting in join()
+
+    def _write(self, batch):
+        try:
+            for path, arrays in batch:
+                savez_atomic(path, **arrays)
+        except BaseException as e:          # surfaced at the next join()
+            self._err = e
+
+    def join(self):
+        if self._th is not None:
+            tw = time.time()
+            self._th.join()
+            self.t_wait += time.time() - tw
+            self._th = None
+        if self._err is not None:
+            e, self._err = self._err, None
+            raise RuntimeError("CKPT_ASYNC: background checkpoint write failed") from e
+
+    def submit(self, batch):
+        """batch: list of (path, thunk) with thunk() -> dict of arrays."""
+        if not self.async_:
+            for path, thunk in batch:
+                savez_atomic(path, **thunk())
+            return
+        self.join()
+        snap = [(path, thunk()) for path, thunk in batch]
+        import threading
+        self._th = threading.Thread(target=self._write, args=(snap,),
+                                    name='ckpt_writer', daemon=False)
+        self._th.start()
 
 
 # =========================================================================
@@ -2813,6 +2867,10 @@ def main():
           + f"\n{'='*60}", flush=True)
 
     PROFILE = bool(os.environ.get('PROFILE'))
+    _ckw = _CkptWriter(CKPT_ASYNC)
+    print(f"  CKPT_ASYNC={int(CKPT_ASYNC)}: _ckpt files "
+          f"{'snapshotted to host, written by a background thread' if CKPT_ASYNC else 'written synchronously'}"
+          f" (every {CKPT_EVERY_FRAMES} frame(s), STATE_CKPT={int(STATE_CKPT)})", flush=True)
     # winds at the START of the first step to be run. u0/v0/w0 is the PREVIOUS
     # step's field, carried forward at the bottom of the loop, so on a resume it
     # must be the checkpoint's hour -- seeding it with winds(0) makes the first
@@ -3511,7 +3569,14 @@ def main():
             # ALL THREE writes below are atomic (savez_atomic) -- plain np.savez
             # here cost the prod1yr frames history to an OOM kill mid-write.
             if len(frame_hours) % CKPT_EVERY_FRAMES == 0 or s == N_STEPS - 1:
-                savez_atomic(f'coupled_frames_{OUT_TAG}_ckpt.npz',
+                # thunks: under CKPT_ASYNC=0 each dict is built right before its
+                # own write (as the inline calls did); under CKPT_ASYNC=1 all
+                # three are built now, on this thread, and written in the
+                # background. _h makes the 3-D state a private host copy then.
+                _h = np.array if CKPT_ASYNC else np.asarray
+                _tck = time.time()
+                _ck_batch = [
+                    (f'coupled_frames_{OUT_TAG}_ckpt.npz', lambda: dict(
                          frame_hours=np.array(frame_hours),
                          frames_num=np.stack(frames_num), frames_mas=np.stack(frames_mas),
                          frames_dT=np.stack(frames_dT),
@@ -3522,24 +3587,26 @@ def main():
                          # the vertical/horizontal axes, so a zonal frame is
                          # plottable from this file alone rather than needing the
                          # final state beside it
-                         plev_pa=PLEV_PA, lat=lat, lon=lon, **_zm_arrays())
-                savez_atomic(f'coupled_timeseries_{OUT_TAG}_ckpt.npz', N0=N0, M0=M0,
+                         plev_pa=PLEV_PA, lat=lat, lon=lon, **_zm_arrays())),
+                    (f'coupled_timeseries_{OUT_TAG}_ckpt.npz', lambda: dict(
+                         N0=N0, M0=M0,
                          inj_cfg=INJ_CFG, inj_cfg_keys=INJ_CFG_KEYS,
                          phys_cfg=PHYS_CFG, phys_cfg_keys=PHYS_CFG_KEYS,
-                         **{k: np.array(v) for k, v in ts.items()})
+                         **{k: np.array(v) for k, v in ts.items()})),
+                ]
                 # full 3-D prognostic state + every cumulative counter, so RESUME=1
                 # can pick the run up from here. Written LAST, so the state is never
                 # newer than the frames/ts it is meant to agree with -- a kill between
                 # the writes leaves them AHEAD of the state instead, which the RESUME
                 # branch trims back (see 'frames/ts ahead of the state' there).
                 if STATE_CKPT:
-                    savez_atomic(f'coupled_state_{OUT_TAG}_ckpt.npz',
+                    _ck_batch.append((f'coupled_state_{OUT_TAG}_ckpt.npz', lambda: dict(
                              s_done=s, nbins=NA, nlev=nlev, nlat=nlat, nlon=nlon,
                              step_hours=STEP_HOURS,
-                             num=np.asarray(num), mas=np.asarray(mas),
-                             so2=np.asarray(so2), h2so4=np.asarray(h2so4),
-                             dT_rad=np.asarray(dT_rad),
-                             hr_kday=np.asarray(hr_kday),
+                             num=_h(num), mas=_h(mas),
+                             so2=_h(so2), h2so4=_h(h2so4),
+                             dT_rad=_h(dT_rad),
+                             hr_kday=_h(hr_kday),
                              N0=N0, M0=M0, N0i=N0i, M0i=M0i, S0=S0,
                              clip_add_cum=clip_add_cum, clip_rem_cum=clip_rem_cum,
                              nfloor_cum=nfloor_cum, inj_cum=inj_cum,
@@ -3552,8 +3619,19 @@ def main():
                              arf_hist=np.array(list(arf_hist)),
                              inj_cfg=INJ_CFG, phys_cfg=PHYS_CFG,
                              phys_cfg_keys=PHYS_CFG_KEYS,
-                             grid_cfg=GRID_CFG, grid_cfg_keys=GRID_CFG_KEYS)
+                             grid_cfg=GRID_CFG, grid_cfg_keys=GRID_CFG_KEYS)))
+                _ckw.submit(_ck_batch)
+                del _ck_batch
+                if PROFILE:
+                    print(f"  [prof] s={s} ckpt={time.time()-_tck:.2f}s "
+                          f"({'async: snapshot+queue' if CKPT_ASYNC else 'sync write'})",
+                          flush=True)
 
+    # the last checkpoint must be on disk before the run reports done
+    _ckw.join()
+    if CKPT_ASYNC and PROFILE:
+        print(f"  [prof] ckpt writer: main thread waited {_ckw.t_wait:.2f}s in total",
+              flush=True)
     print(f"\n{'='*60}\nComplete in {time.time()-t0:.0f}s\n{'='*60}", flush=True)
 
     # ---- save ----]

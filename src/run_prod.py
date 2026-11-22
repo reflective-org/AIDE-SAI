@@ -97,6 +97,7 @@ KNOBS = [
  ("run", "--frame3d",      "FRAME3D",      None,   "0|1", "1 = write the full 3-D state + per-cell size statistics + TOA fields after EVERY step to frames3d/step_<s>.npz (~480 MB/step, ~700 GB/yr)"),
  ("run", "--frame3d-every", "FRAME3D_EVERY", None,  "N",   "write frames3d only every N-th step (output-only; N coprime to 4 rotates the UTC hour)"),
  ("run", "--ckpt-every-frames", "CKPT_EVERY_FRAMES", None, "N", "write the state checkpoint every N frames (output cadence only)"),
+ ("run", "--ckpt-async",   "CKPT_ASYNC",   None,   "0|1", "perf: snapshot the _ckpt arrays to host and write them in a background thread (default 0 = synchronous writes)"),
  ("run", "--frame-levels", "FRAME_LEVELS", None,   "probe|all",
                                                           "'probe' (default) = one PROBE_HPA level; 'all' adds a "
                                                           "zonal-mean frame at every level (+1.1 GB/yr) and unlocks "
