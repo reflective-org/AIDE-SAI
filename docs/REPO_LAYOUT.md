@@ -25,7 +25,9 @@ AIDE-SAI/
     advection/       sl_lr.py + sl_core.py (ADV_SCHEME=sl, the default), fct_lr.py (lr),
                      ffsl_lr.py (ffsl, imports fct_lr's sweeps), fct_fast.py (fast, and the
                      primitives fct_lr imports), fct_core.py (legacy, test_conservation.py only)
-    met/             bc_clim.py (BC_SRC=clim), met_jcm.py (MET_SRC=jcm: meteorology and grid)
+    met/             bc_clim.py (BC_SRC=clim), met_jcm.py (MET_SRC=jcm: meteorology and grid),
+                     met_jcm_online.py + jcm_server.py (MET_SRC=jcm_online: jcm-strat run live;
+                     the server runs in jcm-strat's own interpreter, a subprocess)
     microphysics/    tomas_fast.py -- the tomas_jax.fast adapter (MICRO_ENGINE=fast)
     radiation/       radiation.py -- Mie + RRTMGP -> heating, AOD, ARF; rad_cache.py,
                      rad_cache_build.py -- the per-hour reference cache
@@ -34,9 +36,12 @@ AIDE-SAI/
     met/             make_bc_climatology.py, regrid_clim_to_grid.py -- build CLIM_FILE
     radiation/       build_ref_cache.py, test_rad_cache.py, plot_solar_artifact.py
     utils/           plot_run.py, gif_run.py, run_summary.py -- the post-run figures and summary
+    analysis/        multi-run comparisons (scripts/analysis/README.md): summary_2yr/ (injection
+                     vs control), jcm_vs_cesm_2yr.py (one scenario on two linkings)
     validation/      tests and investigation harnesses (docs/VALIDATION.md)
   inputs/          small static input data + provenance of the external archives
     rad_data/palmer_williams_h2so4.dat
+    assets/ne_110m/  Natural Earth 1:110m coastlines (public domain) for map figures
   docs/            documentation (docs/README.md is the index); figures/ holds its SVGs
   runs/            raw model output, one directory per OUT_TAG   (only README.md tracked)
   outputs/         derived figures and tables                    (only README.md tracked)
@@ -58,6 +63,7 @@ afterwards. A run must not depend on anything in `scripts/`.
 | a check that the physics is right | `scripts/validation/` |
 | a script that builds a run's inputs | `scripts/<process>/` |
 | a figure or a plot script | `scripts/utils/`; its products in `outputs/` |
+| a comparison across several runs (figures + `metrics.json`) | `scripts/analysis/`; run it from a directory under `runs/` |
 | data the model reads and that is small | `inputs/` |
 | data the model writes | `runs/<TAG>/` — never committed |
 | a change to tomas-jax or jax-rrtmgp | that repo, upstream; or `patches/` if it cannot be |
@@ -89,17 +95,20 @@ That is deliberately deferred — see [DEFERRED.md](./DEFERRED.md).
 ## The submodules and the presets
 
 `models/tomas-jax` and `models/jax-rrtmgp` are git submodules pinned to exact
-commits, so a clone reconstructs the code that produced a result. Each preset
+commits, so a clone reconstructs the code that produced a result.
+`models/jcm-strat` (with its own nested submodule `external/jax-gcm`) is a third,
+used only by `jcm_online_numerical`. Each preset
 names, per model slot, the checkout that fills it and the commit it must be at
 (`#@submodule SLOT PATH SHA [patch=FILE]`); `run_prod.py` refuses to start when a
-checkout does not match, and points `TOMAS_JAX_PATH` / `RRTMGP_PATH` at it.
+checkout does not match, and points `TOMAS_JAX_PATH` / `RRTMGP_PATH` (and
+`JCM_STRAT_PATH`) at it.
 `scripts/validation/test_configs.py` (in CI) checks that every pin equals the
 commit the superproject records.
 
 ```bash
 git clone --recurse-submodules https://github.com/reflective-org/AIDE-SAI.git
 # or, in an existing clone:
-git submodule update --init
+git submodule update --init --recursive
 git -C models/jax-rrtmgp apply ../../patches/jax-rrtmgp-zenith.patch
 ```
 

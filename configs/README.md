@@ -9,6 +9,7 @@ differ between linkings. `src/run_prod.py --preset NAME` applies
 |---|---|
 | `cesm_numerical.env` (default) | CESM2 h1 meteorology on f09, `tomas_jax.fast`, RRTMGP. Reproduces the 2-year CESM runs bit-identically |
 | `jcm_numerical.env` | jcm-strat AL7h70 meteorology on the JCM T63 grid, `tomas_jax.fast`, RRTMGP. Reproduces the 2-year JCM run bit-identically |
+| `jcm_online_numerical.env` | as `jcm_numerical`, but jcm-strat AL7h **runs live** beside the coupler (`MET_SRC=jcm_online`, code from the `jcm-strat` slot). Has the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS`. **Not bit-reproducible**: jcm-strat on GPU is not deterministic run to run, so it is validated statistically (`scripts/validation/validate_jcm_online.py`), never bitwise. Also sets three machine paths (`JCM_PY`, `JCM_CACHE`, `JCM_SCRATCH`) |
 
 ```bash
 python3 src/run_prod.py --list-presets                    # name + first comment line; marks the default
@@ -51,9 +52,23 @@ variable that `coupling.py` reads:
 |---|---|---|
 | `tomas-jax` | `TOMAS_JAX_PATH` | the tomas-jax checkout (microphysics, and the Mie and water-equilibrium routines that radiation and settling import) |
 | `jax-rrtmgp` | `RRTMGP_PATH` | the jax-rrtmgp checkout (radiative transfer and its k-distribution data) |
+| `jcm-strat` | `JCM_STRAT_PATH` | the jcm-strat checkout, recursively initialised: `jcm_strat`, and `jcm` from its own `external/jax-gcm` submodule. Only `MET_SRC=jcm_online` uses it: the JCM server imports both from here (never from its venv) and refuses to start otherwise. Nothing of it goes on the coupler's own `sys.path` |
 
-Every preset must pin **every** slot exactly once. `test_configs.py` enforces
-this, so no preset silently inherits whatever `models/` happens to contain.
+Every preset must pin every slot it uses exactly once. `tomas-jax` and
+`jax-rrtmgp` are used by every linking, so every preset pins them. A slot in
+`SLOT_NEEDED_IF` (`run_prod.py`) is used only by some linkings, and a preset
+pins it exactly when it selects one of them: `jcm-strat` exactly when
+`MET_SRC=jcm_online`. That keeps the other linkings from needing a checkout (and
+naming a commit) they never run. `test_configs.py` enforces both rules, so no
+preset silently inherits whatever `models/` happens to contain.
+
+**Machine paths.** A submodule checkout holds a model's code, but not a
+virtualenv or data caches. Where a slot needs those, they are separate `PATH`
+knobs, and a preset that uses that slot sets them to the paths on the machine
+its runs were made on, in a block marked as machine paths.
+`jcm_online_numerical` sets `JCM_PY` (jcm-strat's interpreter, a Python 3.11
+venv), `JCM_CACHE` and `JCM_SCRATCH`. On another machine, override them with
+`--jcm-py`, `--jcm-cache` and `--jcm-scratch`.
 
 ## Forbidden keys
 
@@ -71,8 +86,8 @@ keys fall into three groups:
   tests these with `'X' in os.environ` or `bool(os.environ.get(X))`, so writing
   out what looks like the default changes behaviour. For example, `DEBUG=0`
   turns debugging *on*.
-- **The slot paths**: `TOMAS_JAX_PATH`, `RRTMGP_PATH`. These come only from
-  `#@submodule` lines, so a path can never escape the pin check.
+- **The slot paths**: `TOMAS_JAX_PATH`, `RRTMGP_PATH`, `JCM_STRAT_PATH`. These
+  come only from `#@submodule` lines, so a path can never escape the pin check.
 
 A key that is not in `KNOBS` is also refused. Add it to `KNOBS` first, with
 its help text, and the preset can then use it.
@@ -117,21 +132,26 @@ Before anything is launched (and in `--dry-run`), `check_pins()` checks each
    which means the patch is applied.
 
 Any mismatch stops the launch with the command that fixes it. Then
-`TOMAS_JAX_PATH` / `RRTMGP_PATH` are set to the absolute checkout paths, so
-the run imports exactly what was verified. The header prints each slot as
+`TOMAS_JAX_PATH` / `RRTMGP_PATH` (and `JCM_STRAT_PATH`) are set to the absolute
+checkout paths, so the run imports exactly what was verified. For jcm-strat the
+pin check covers the superproject's gitlink; the nested `external/jax-gcm`
+commit is the one that jcm-strat commit records, and `git submodule update
+--init --recursive` checks it out. The header prints each slot as
 `(verified)`.
 
 `--no-verify-pins` skips the check, and the header then says `(NOT VERIFIED)`.
 Use it only for local experiments. A run made that way is **not** the preset's
 model, and its log says so. An exported `TOMAS_JAX_PATH` / `RRTMGP_PATH` also
 wins over the slot path (with the warning above). The pin was checked on the
-preset's path, not on yours, so treat that run as unverified as well.
+preset's path, not on yours, so treat that run as unverified as well. The same
+holds for an exported `JCM_STRAT_PATH`.
 
 In CI, `scripts/validation/test_configs.py` checks that every preset parses
 with `load_preset()` and sets `ADV_VPOS=1`. It also checks that each preset
-pins every slot once, that every pinned `PATH` is a registered submodule
-pinned to **exactly the gitlink the superproject records** (`git ls-tree
-HEAD`), and that every named patch exists. So a preset and
+pins every slot it needs exactly once, that every pinned `PATH` is a registered
+submodule pinned to **exactly the gitlink the superproject records** (the
+index, `git ls-files --stage`, which on a clean checkout and in CI is HEAD's),
+and that every named patch exists. So a preset and
 `git submodule update` can never disagree silently: moving a submodule without
 updating every preset that points at it fails CI.
 
@@ -162,14 +182,16 @@ has exports in it, `unset` them, or start a fresh shell.
 ## Adding a preset
 
 1. **Write `configs/<name>.env`.** Start with the one-line description and a
-   provenance comment that names the runs, the date and the commit. Pin both
-   slots, and set only the knobs that make this linking different. Leave
+   provenance comment that names the runs, the date and the commit. Pin every
+   slot it uses, and set only the knobs that make this linking different. Leave
    everything else to the module defaults, so a later change to a default
    reaches every preset that does not override it. Every preset must set
    `ADV_VPOS=1`, because without the vertical positivity limiter the number
    field is not usable. A new implementation goes behind an existing selector
    (`MET_SRC`, `BC_SRC`, `AER_SRC`, `ADV_SCHEME`, `MICRO_ENGINE`,
-   `RAD_ENGINE`) and is chosen here. It never goes on a branch.
+   `RAD_ENGINE`) and is chosen here. It never goes on a branch. If the linking
+   needs a machine-specific path (an interpreter, a data cache), make it a
+   `PATH` knob and set it in a block marked as machine paths.
 2. **Check it**: `python3 scripts/validation/test_configs.py`, then
    `run_prod.py --preset <name> --dry-run` from a run directory with your
    scenario flags. Read every resolved value and its source.
@@ -184,7 +206,7 @@ A slot's checkout is a git submodule pinned to an exact commit, never a
 vendored copy. To run a different commit, such as tomas-jax `dev` `835ee24` for
 `MICRO_ENGINE=full`, which calls `make_step` arguments that `gpu-fast` does not
 have, add it as a **second submodule path**. Do not move the existing one,
-because `cesm_numerical` and `jcm_numerical` pin it.
+because the existing presets pin it.
 
 ```bash
 git submodule add -b dev https://github.com/reflective-org/tomas-jax models/tomas-jax-dev
@@ -212,9 +234,11 @@ Add test coverage with it:
   against the dev checkout. A harness that needs the submodule or a GPU cannot
   run in CI. Write it as a validation script, list it in `docs/VALIDATION.md`,
   and run it before merging.
-- If the preset needs a slot that does not exist yet (a third model repo), add
+- If the preset needs a slot that does not exist yet (another model repo), add
   it to `SLOT_ENV` in `run_prod.py` together with the variable `coupling.py`
-  reads for it. Every existing preset must then pin that slot too.
+  reads for it. If every linking uses it, every existing preset must then pin
+  it too. If only some do, add it to `SLOT_NEEDED_IF` with the knob value that
+  uses it, as `jcm-strat` is for `MET_SRC=jcm_online`.
 
 A patch that the new commit needs goes in `patches/` and is named with
 `patch=`. Generate it against the pinned commit; `git apply` refuses to

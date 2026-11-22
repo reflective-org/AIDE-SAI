@@ -69,7 +69,7 @@ jobs:
       # Every linking preset in configs/ parses with run_prod.py's own loader,
       # pins each model slot to exactly the commit the superproject records for
       # that submodule, and names patches that exist. Needs no submodule
-      # checkout (git ls-tree reads the gitlinks); full history is not needed.
+      # checkout (git ls-files --stage reads the gitlinks); full history is not needed.
       - name: linking presets
         run: python scripts/validation/test_configs.py
 
@@ -94,10 +94,10 @@ jobs:
       # "organize imports" would hoist those imports above the path setup and
       # break the tree. 33 of the 77 findings from a default ruff run are that
       # rule, and every one of them is a false positive for this layout.
-      # --exclude models: the two dependency submodules live under models/ since
+      # --exclude models: the dependency submodules live under models/ since
       # 2026-08-27. CI does not check them out (no `submodules: true` -- nothing
       # in this job needs them), so they are empty here, but a developer running
-      # `ruff check .` locally would otherwise lint two upstream repos this
+      # `ruff check .` locally would otherwise lint upstream repos this
       # project does not own.
       - name: ruff
         run: ruff check --select=E9,F63,F7,F82 --exclude models .

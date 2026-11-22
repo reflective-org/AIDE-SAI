@@ -16,8 +16,8 @@ boundary climatology, the physics choices that differ between linkings, and
 WHICH CHECKOUT fills each model slot (`#@submodule` lines: the submodule path,
 the exact commit it must be at, and any patch that must be applied on top). The
 launcher refuses to start if a slot's checkout is not at the pinned commit, and
-points TOMAS_JAX_PATH / RRTMGP_PATH at the checkouts the preset names. A preset
-does NOT set the scenario (INJ_*), the run length, the tag or RESUME: those vary
+points TOMAS_JAX_PATH / RRTMGP_PATH (and, for MET_SRC=jcm_online,
+JCM_STRAT_PATH) at the checkouts the preset names. A preset does NOT set the scenario (INJ_*), the run length, the tag or RESUME: those vary
 run to run and go on the command line. See configs/README.md.
 
 Without --preset the default linking, `cesm_numerical`, is applied. `--preset none` runs
@@ -166,9 +166,15 @@ KNOBS = [
                                                           "tomas-jax gpu-fast; full = tomas-jax dev make_step, which needs a "
                                                           "preset whose tomas-jax slot is a dev checkout)"),
  # ---- meteorology source ----
- ("met", "--met-src",      "MET_SRC",      None,   "cesm|file|jcm", "where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src"),
- ("met", "--jcm-dir",      "JCM_DIR",      None,   "PATH", "MET_SRC=jcm: the jcm-strat run directory (default /data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70, the AL7h chain); read-only"),
- ("met", "--met-q",        "MET_Q",        None,   "bc|met", "MET_SRC=jcm: water vapour from the BC source (bc, default: the regridded CESM climatology -- jcm-strat is dry and its q is a passive constant) or from JCM (met)"),
+ ("met", "--met-src",      "MET_SRC",      None,   "cesm|file|jcm|jcm_online", "where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); jcm_online = the same fields and grid from the jcm-strat AL7h model integrated LIVE beside this one (src/met/jcm_server.py, a subprocess under --jcm-py on the same GPU; code from the jcm-strat slot), started from the --jcm-dir chain's 1 January checkpoint; file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src"),
+ ("met", "--jcm-dir",      "JCM_DIR",      None,   "PATH", "MET_SRC=jcm|jcm_online: the jcm-strat run directory (default /data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70, the AL7h chain); read-only. jcm_online reads only its 1 January checkpoints, their last output frame and the template segment's output (for the grid)"),
+ ("met", "--jcm-template", "JCM_TEMPLATE", None,   "PATH", "MET_SRC=jcm_online: the resolved Hydra config the live JCM is built from (default <jcm-dir>/<chain>_19960101/.hydra/config.yaml); start time, QBO year and init file are set per year"),
+ ("met", "--jcm-py",       "JCM_PY",       None,   "PATH", "MET_SRC=jcm_online: the interpreter the JCM server runs under, a Python 3.11 venv with jcm-strat's dependencies (JAX 0.10; default <JCM_STRAT_PATH>/.venv/bin/python). Machine-specific: a submodule checkout has no venv. jcm_strat and jcm themselves are imported from the slot, not from this venv"),
+ ("met", "--jcm-cache",    "JCM_CACHE",    None,   "PATH", "MET_SRC=jcm_online: jcm-strat's data cache, holding era5/ (the regridded ERA5 nudging windows, JCM_ERA5_CACHE) and huggingface/ (jcm boundary files, HF_HOME) (default <JCM_STRAT_PATH>/cache). Machine-specific; a missing ERA5 window is downloaded and regridded on first use"),
+ ("met", "--jcm-scratch",  "JCM_SCRATCH",  None,   "PATH", "MET_SRC=jcm_online: jcm's scratch directory, $SCRATCH (its JAX compilation cache is $SCRATCH/jcm-jax-cache; default <JCM_STRAT_PATH>/scratch). Machine-specific; cannot change results"),
+ ("met", "--jcm-te-correction", "JCM_TE_CORRECTION", None, "PATH", "MET_SRC=jcm_online: the AL7h T_e correction file (default the jcm-strat slot's tracked docs/outputs/25_al7_half/corrections/AL7h.nc; the template's own path names a removed jcm-strat worktree)"),
+ ("met", "--jcm-work",     "JCM_WORK",     None,   "DIR",  "MET_SRC=jcm_online: where the live JCM writes its year-end checkpoints (default jcm_online/ in the run directory; a RESUME restarts from them)"),
+ ("met", "--met-q",        "MET_Q",        None,   "bc|met", "MET_SRC=jcm|jcm_online: water vapour from the BC source (bc, default: the regridded CESM climatology -- jcm-strat is dry and its q is a passive constant) or from JCM (met)"),
  ("met", "--met-dir",      "MET_DIR",      None,   "PATH", "MET_SRC=file: directory holding u/v/omega/T.npy + meta.json"),
  ("met", "--met-rh",       "MET_RH",       None,   "liq|q|cesm", "RH seen by settling, the microphysics' water uptake (full chain) and the FRAME3D wet diagnostics, recomputed every step from Q, T and p: liq (default) = over liquid water, Tabazadeh 1997 eq. 1. The radiation's wet optics ignore MET_RH and always compute liquid RH from Q themselves; q = over ice (the old MET_SRC=file default; 1.6-1.9x liq in the band); cesm = the archive's RELHUM as is"),
  ("met", "--bc-src",       "BC_SRC",       None,   "cesm|clim", "where every non-wind boundary field comes from (set by the preset): clim = the monthly climatology in CLIM_FILE (scripts/met/make_bc_climatology.py); cesm (module default) = the hourly archive"),
@@ -211,6 +217,7 @@ KNOBS = [
  ("path", "--cesm-suf",    "CESM_SUF",     None,   "STR",  "date-range suffix of the h1 files"),
  ("path", "--tomas-jax-path", "TOMAS_JAX_PATH", None, "PATH", "tomas-jax checkout (default models/tomas-jax)"),
  ("path", "--rrtmgp-path", "RRTMGP_PATH",  None,   "PATH", "jax-rrtmgp checkout (default models/jax-rrtmgp)"),
+ ("path", "--jcm-strat-path", "JCM_STRAT_PATH", None, "PATH", "jcm-strat checkout, recursively initialised (jcm_strat + external/jax-gcm's jcm), that the MET_SRC=jcm_online server imports (default models/jcm-strat)"),
  # ---- debug dumps ----
  ("dbg", "--dump-premicro", "DUMP_PREMICRO", None, "PATH", "dump the pre-microphysics state to this file"),
  ("dbg", "--dump-premicro-step", "DUMP_PREMICRO_STEP", None, "N", "step at which to take that dump"),
@@ -245,7 +252,23 @@ GROUPS = [
 #   # ...                           a comment
 # No shell evaluation, no includes: a preset is read the same way everywhere.
 # ---------------------------------------------------------------------------
-SLOT_ENV = {"tomas-jax": "TOMAS_JAX_PATH", "jax-rrtmgp": "RRTMGP_PATH"}
+SLOT_ENV = {"tomas-jax": "TOMAS_JAX_PATH", "jax-rrtmgp": "RRTMGP_PATH",
+            "jcm-strat": "JCM_STRAT_PATH"}
+# Slots only some linkings use: slot -> (knob, the values that need it). A preset
+# pins such a slot exactly when its knob takes one of those values, and never
+# otherwise, so a linking that does not run jcm-strat neither needs the
+# submodule checked out nor names a commit it does not use. Every other slot is
+# pinned by every preset (scripts/validation/test_configs.py).
+SLOT_NEEDED_IF = {"jcm-strat": ("MET_SRC", {"jcm_online"})}
+
+
+def slots_needed(values):
+    """The slots a preset with these KEY=VALUE settings must pin."""
+    return {slot for slot in SLOT_ENV
+            if slot not in SLOT_NEEDED_IF
+            or values.get(SLOT_NEEDED_IF[slot][0], "") in SLOT_NEEDED_IF[slot][1]}
+
+
 # What a preset may NOT set. The scenario and run control vary run to run and
 # belong on the command line. The others are read by PRESENCE or truthiness
 # ('X' in os.environ, bool(os.environ.get(X))), so writing out a "default" value
@@ -254,7 +277,7 @@ PRESET_FORBIDDEN = {
     "INJ_SO2_TG_YR", "INJ_H2SO4_TG_YR", "INJ_HPA", "INJ_LAT", "INJ_LON",
     "INJ_ZONAL", "INJ_MIRROR", "N_HOURS", "N_DAYS", "OUT_TAG", "RESUME", "H0",
     "MICRO_SUBSTEPS", "OH_SUBSTEPS", "DEBUG", "PROFILE", "DUMP_PREMICRO",
-    "INIT_SIGMA", "TOMAS_JAX_PATH", "RRTMGP_PATH",
+    "INIT_SIGMA", "TOMAS_JAX_PATH", "RRTMGP_PATH", "JCM_STRAT_PATH",
 }
 KNOB_NAMES = {row[2] for row in KNOBS}
 # Knobs whose value is a path. In a preset a relative one is relative to the
@@ -357,7 +380,7 @@ def list_presets():
         first = next((ln.lstrip("# ").strip() for ln in path.read_text().splitlines()
                       if ln.startswith("# ") and not ln.startswith("#@")), "")
         mark = "  (default)" if path.stem == DEFAULT_PRESET else ""
-        print(f"{path.stem:<12} {first}{mark}")
+        print(f"{path.stem:<22} {first}{mark}")
 
 
 def build_parser():

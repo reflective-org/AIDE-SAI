@@ -13,6 +13,14 @@ distributed in HITRAN Aerosols-2016, tabulated over wavelength at 25, 38, 50,
 as `RI_FILE` to build the Mie lookup tables that turn TOMAS bins into RRTMGP
 optical properties. 33 KB, so it is tracked in git rather than fetched.
 
+## `assets/ne_110m/ne_110m_coastline.*` (tracked)
+
+Natural Earth 1:110m coastlines (shapefile: `.shp`, `.shx`, `.dbf`, `.prj`,
+`.cpg`), used only for drawing coastlines on the map figures of
+`scripts/analysis/summary_2yr/`. Made with Natural Earth
+(https://www.naturalearthdata.com), which is in the public domain. 95 KB, so it
+is tracked; the scripts draw maps without coastlines if it is missing.
+
 ## `cache/` (gitignored)
 
 The radiation reference cache (`RAD_REF_CACHE`, default `inputs/cache/rad_ref`;

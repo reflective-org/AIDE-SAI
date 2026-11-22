@@ -23,7 +23,7 @@ coupled model runs: the knob values that differ between linkings and, via
 patch) filling each model slot. `src/run_prod.py --preset NAME` (default
 `cesm_numerical`; `none` = coupling.py's module defaults) refuses to start if a slot's
 checkout is not at its pin, and echoes the preset, the pins and every resolved
-value. Two linkings ship, both numerical:
+value. Three linkings ship, all numerical:
 
 - `cesm_numerical` (default): CESM2 h1 hourly winds/T on the f09 grid, the monthly CESM
   climatology for everything else, `tomas_jax.fast` microphysics
@@ -31,6 +31,15 @@ value. Two linkings ship, both numerical:
   K=12), RRTMGP + Mie radiation.
 - `jcm_numerical`: the same, but jcm-strat AL7h70 6-hourly meteorology on the JCM grid
   (T63 Gaussian 96×192) with the CESM climatology regridded onto it.
+- `jcm_online_numerical`: as `jcm_numerical`, but jcm-strat AL7h **runs live**
+  beside the coupler (`MET_SRC=jcm_online`): `src/met/jcm_server.py` in a
+  subprocess under jcm-strat's own interpreter (`JCM_PY`, Python 3.11 / JAX 0.10;
+  this repo runs JAX 0.6), importing `jcm_strat` and `jcm` from the third slot,
+  `models/jcm-strat` (f3c2070, nested `external/jax-gcm`). Only this preset pins
+  that slot (`SLOT_NEEDED_IF`). It also sets machine paths (`JCM_PY`,
+  `JCM_CACHE`, `JCM_SCRATCH`). jcm-strat on GPU is **not deterministic run to
+  run**, so this linking is validated statistically
+  (`scripts/validation/validate_jcm_online.py`), never bitwise.
 
 A new linking — including a mixed numerical/emulated one — is a new preset,
 plus any new slot implementation behind an existing selector. A different
@@ -43,7 +52,8 @@ copy and never a long-lived branch. Changing a preset or a default needs a
 meteorology sources (including emulated dycores, which would close the
 circulation loop too — `MET_SRC=file` is that seam) and other aerosol schemes
 (CARMA, MAM, GLOMAP). CESM, JCM and TOMAS are what is wired in first, not the
-target. At any seam — the meteorology readers, the wind interface, `AER_SRC`,
+target. At any seam — the meteorology readers (and the live-JCM server's line
+protocol), the wind interface, `AER_SRC`,
 the engine swap in `driver_fast.py`, the radiation driver, the preset slots —
 prefer keeping the seam generic over specialising it, and say so if a change
 would make a slot harder to swap. `README.md` is the orientation;
@@ -84,6 +94,8 @@ bins CESM's MAM4 output fields onto the TOMAS bins.)
   `scripts/validation/test_conservation.py` (in CI).
 - Analysis scripts read `coupled_*_<TAG>.npz` from the *current working
   directory* and write `<TAG>_*.png` beside them.
+  Multi-run comparisons (`scripts/analysis/`) take the run directories as
+  flags and write into the current directory: run them from under `runs/`.
 - Prefer extending `coupling.py` over adding helper scripts; the four
   overlapping plot scripts this repo used to have are why `scripts/utils/plot_run.py` is one
   file.

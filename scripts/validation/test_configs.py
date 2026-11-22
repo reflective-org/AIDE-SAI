@@ -4,8 +4,12 @@
 For every configs/*.env:
   * it parses with run_prod.py's own loader (known knobs only, no forbidden
     keys, well-formed #@submodule lines);
+  * it pins every model slot it needs exactly once (every slot, except that a
+    slot in run_prod.SLOT_NEEDED_IF -- jcm-strat -- is pinned exactly when the
+    preset selects what uses it, MET_SRC=jcm_online, and never otherwise);
   * every #@submodule PATH that is a registered submodule is pinned to exactly
-    the commit the superproject records for it (git ls-tree), so a preset and
+    the commit the superproject records for it (the gitlink in the index, which
+    is HEAD's on a clean checkout and in CI), so a preset and
     `git submodule update` can never disagree silently;
   * every patch file it names exists;
   * the default preset exists.
@@ -29,9 +33,11 @@ def check(label, ok, detail=""):
 
 
 def gitlink(path):
-    out = subprocess.run(["git", "ls-tree", "HEAD", path], cwd=REPO,
+    # the index, not HEAD: identical in CI, and it also sees a submodule that has
+    # been added or moved with `git add` but not committed yet
+    out = subprocess.run(["git", "ls-files", "--stage", "--", path], cwd=REPO,
                          capture_output=True, text=True).stdout.split()
-    return out[2] if len(out) >= 3 and out[1] == "commit" else None
+    return out[1] if len(out) >= 4 and out[0] == "160000" else None
 
 
 presets = sorted((REPO / "configs").glob("*.env"))
@@ -44,8 +50,9 @@ for path in presets:
     check("parses", True)
     check("sets ADV_VPOS=1", values.get("ADV_VPOS") == "1", f"got {values.get('ADV_VPOS')!r}")
     slots = [p["slot"] for p in pins]
-    check("pins every model slot exactly once", sorted(slots) == sorted(run_prod.SLOT_ENV),
-          f"slots {slots}")
+    need = run_prod.slots_needed(values)
+    check(f"pins every slot it needs exactly once ({', '.join(sorted(need))})",
+          sorted(slots) == sorted(need), f"slots {slots}")
     for pin in pins:
         link = gitlink(pin["path"])
         check(f"{pin['slot']}: {pin['path']} is a registered submodule", link is not None)

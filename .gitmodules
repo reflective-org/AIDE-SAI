@@ -5,3 +5,7 @@
 [submodule "models/jax-rrtmgp"]
 	path = models/jax-rrtmgp
 	url = https://github.com/climate-analytics-lab/jax-rrtmgp
+[submodule "models/jcm-strat"]
+	path = models/jcm-strat
+	url = https://github.com/reflective-org/jcm-strat
+	branch = dev

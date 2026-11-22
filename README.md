@@ -10,9 +10,10 @@ swappable slot (meteorology/dycore, boundary climatology, transport, aerosol
 microphysics, settling, radiation), and each slot is filled by a numerical
 scheme or, in future, a learned emulator. A **linking** is one choice for every
 slot plus the exact submodule commits behind it, written down as a preset file
-in [`configs/`](./configs/README.md). This repository ships two linkings, both
-fully numerical: CESM2 meteorology on the CESM f09 grid (the default), and
-jcm-strat meteorology on the JCM T63 grid. The end goal is model-agnostic
+in [`configs/`](./configs/README.md). This repository ships three linkings, all
+fully numerical: CESM2 meteorology on the CESM f09 grid (the default),
+jcm-strat meteorology on the JCM T63 grid read from a finished run, and the
+same jcm-strat model run live beside the coupler. The end goal is model-agnostic
 coupling: other dycores, emulated ones included, and other aerosol schemes
 (CARMA, MAM, GLOMAP).
 
@@ -37,11 +38,14 @@ when you read the output.
 **The meteorology is one-way.** Winds (U, V, OMEGA) and temperature are *read*
 from the meteorology source, and nothing the aerosol does ever changes them.
 The circulation therefore never responds: no self-lofting, no change in
-Brewer-Dobson ascent, nothing sent back to the dycore. Both shipped linkings
-read a finished dycore run (CESM2 history files, or a completed jcm-strat run),
-so both are one-way. Closing this loop needs a dycore that runs alongside the
-coupler and takes the aerosol heating as a forcing. An emulated dycore behind
-the `MET_SRC` seam is the planned way to do that.
+Brewer-Dobson ascent, nothing sent back to the dycore. Two shipped linkings
+read a finished dycore run (CESM2 history files, or a completed jcm-strat run).
+The third, `jcm_online_numerical`, runs the jcm-strat model alongside the
+coupler (`MET_SRC=jcm_online`), but it still only sends winds and temperature
+one way. Closing this loop needs a dycore that runs alongside the coupler and
+takes the aerosol heating as a forcing. The live jcm-strat server is where a
+heating term would go back; an emulated dycore behind the `MET_SRC` seam is
+the other planned way.
 
 **Aerosol, microphysics and radiation are coupled to each other.** Inside the
 prescribed meteorology the model's own aerosol sets the optics, and the optics
@@ -88,48 +92,64 @@ the selectors that differ between linkings. Everything else stays at the
 
 | slot | selector | implementations in this repo | status / planned |
 |---|---|---|---|
-| meteorology / dycore | `MET_SRC` | `cesm`: CESM2 h1 hourly U/V/OMEGA/T on f09 (module default). `jcm`: a jcm-strat run directory (`JCM_DIR`), 6-hourly, and the model grid comes with it (`src/met/met_jcm.py`). `file`: step-end `u/v/omega/T.npy` frames in `MET_DIR` | `cesm_numerical` and `jcm_numerical` are the two presets. `file` is the generic seam for an emulated dycore; nothing in this repo writes it yet |
-| boundary climatology | `BC_SRC` (+ `CLIM_FILE`) | `clim`: monthly CESM climatology on the model grid (`src/met/bc_clim.py`). `cesm`: the hourly archive (module default) | Both presets use `clim`. The climatology is built by `scripts/met/make_bc_climatology.py` and regridded by `scripts/met/regrid_clim_to_grid.py` |
-| aerosol IC/BC source | `AER_SRC` | `mam4`: CESM's MAM4 mode fields binned onto the 40 TOMAS bins (default; this is *not* the MAM4-JAX package). `carma`: a CARMA output file | `mam4` in both presets |
-| transport | `ADV_SCHEME` | `sl`: semi-Lagrangian split, `ADV_SL_K=12` (default). `lr`: Lin-Rood flux form at CFL sub-steps. `ffsl`: `lr` at large Courant number. `fast`: advective form | `sl` in both presets. Validate changes at `ADV_F32=1 ADV_CFL=0.5` |
-| aerosol microphysics | `MICRO_ENGINE` + the `tomas-jax` slot | `fast`: `tomas_jax.fast`, tomas-jax `gpu-fast` 787c991 (default). `full`: tomas-jax dev's `make_step` | `fast` in both presets. `full` needs a dev checkout, so it needs a preset that has one (see [configs/README.md](./configs/README.md)). Planned: a TOMAS emulator (not part of this repo yet; it would fill this slot behind `MICRO_ENGINE`), then CARMA, MAM, GLOMAP |
-| settling | `SETTLE` (`WET_SETTLING`) | closed-form gravitational settling (`src/settling/settling.py`) | On in both presets. It is the model's one true aerosol sink |
-| radiation | `RAD_ENGINE` + the `jax-rrtmgp` slot (`RAD=0` turns it off) | `rrtmgp`: RRTMGP + Mie optics, solar geometry `window_gq` at 3 nodes over the trailing 6 h, `RAD_MODE=anomaly` | `rrtmgp` in both presets. Planned: a radiation emulator (not part of this repo yet; it would fill this slot behind `RAD_ENGINE`) |
+| meteorology / dycore | `MET_SRC` (+ the `jcm-strat` slot for `jcm_online`) | `cesm`: CESM2 h1 hourly U/V/OMEGA/T on f09 (module default). `jcm`: a jcm-strat run directory (`JCM_DIR`), 6-hourly, and the model grid comes with it (`src/met/met_jcm.py`). `jcm_online`: the same fields and grid from the jcm-strat AL7h model integrating live in a subprocess (`src/met/met_jcm_online.py` + `jcm_server.py`, code from `models/jcm-strat`). `file`: step-end `u/v/omega/T.npy` frames in `MET_DIR` | `cesm_numerical`, `jcm_numerical` and `jcm_online_numerical` are the presets. `file` is the generic seam for an emulated dycore; nothing in this repo writes it yet |
+| boundary climatology | `BC_SRC` (+ `CLIM_FILE`) | `clim`: monthly CESM climatology on the model grid (`src/met/bc_clim.py`). `cesm`: the hourly archive (module default) | All presets use `clim`. The climatology is built by `scripts/met/make_bc_climatology.py` and regridded by `scripts/met/regrid_clim_to_grid.py` |
+| aerosol IC/BC source | `AER_SRC` | `mam4`: CESM's MAM4 mode fields binned onto the 40 TOMAS bins (default; this is *not* the MAM4-JAX package). `carma`: a CARMA output file | `mam4` in all presets |
+| transport | `ADV_SCHEME` | `sl`: semi-Lagrangian split, `ADV_SL_K=12` (default). `lr`: Lin-Rood flux form at CFL sub-steps. `ffsl`: `lr` at large Courant number. `fast`: advective form | `sl` in all presets. Validate changes at `ADV_F32=1 ADV_CFL=0.5` |
+| aerosol microphysics | `MICRO_ENGINE` + the `tomas-jax` slot | `fast`: `tomas_jax.fast`, tomas-jax `gpu-fast` 787c991 (default). `full`: tomas-jax dev's `make_step` | `fast` in all presets. `full` needs a dev checkout, so it needs a preset that has one (see [configs/README.md](./configs/README.md)). Planned: a TOMAS emulator (not part of this repo yet; it would fill this slot behind `MICRO_ENGINE`), then CARMA, MAM, GLOMAP |
+| settling | `SETTLE` (`WET_SETTLING`) | closed-form gravitational settling (`src/settling/settling.py`) | On in all presets. It is the model's one true aerosol sink |
+| radiation | `RAD_ENGINE` + the `jax-rrtmgp` slot (`RAD=0` turns it off) | `rrtmgp`: RRTMGP + Mie optics, solar geometry `window_gq` at 3 nodes over the trailing 6 h, `RAD_MODE=anomaly` | `rrtmgp` in all presets. Planned: a radiation emulator (not part of this repo yet; it would fill this slot behind `RAD_ENGINE`) |
 
 The seams are deliberately generic. `driver_fast.py` swaps the microphysics
 engine into `coupling.py` at import rather than branching inside it, and the met
 source declares the grid, so nothing downstream assumes f09. Keep it that way.
 A change that makes a slot harder to swap needs saying so in its PR.
 
-## The two linkings
+## The three linkings
 
 | preset | meteorology | grid | climatology (`CLIM_FILE`) | provenance |
 |---|---|---|---|---|
 | [`cesm_numerical`](./configs/cesm_numerical.env) (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz`, monthly 1996–2014 CESM means | reproduces the 2-year runs `fast_2yr_inj6_30NS` and `fast_2yr_ctrl` (2026-11-18/19) bit-identically |
 | [`jcm_numerical`](./configs/jcm_numerical.env) | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`) | T63 Gaussian, 96 × 192, 47 levels 1.0–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz`, the same climatology regridded onto the JCM grid | reproduces the 2-year run `jcm_1yr_inj6_30NS` (2026-11-18..20) bit-identically |
+| [`jcm_online_numerical`](./configs/jcm_online_numerical.env) | jcm-strat AL7h **run live** beside the coupler, 6-hourly (`MET_SRC=jcm_online`; `models/jcm-strat` f3c2070) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19). **Not bit-reproducible**: jcm-strat on GPU is not deterministic run to run, so this linking is validated statistically (`scripts/validation/validate_jcm_online.py`), never bitwise |
 
-Both linkings share the rest of the stack. Microphysics is `tomas_jax.fast`
+All three linkings share the rest of the stack. Microphysics is `tomas_jax.fast`
 (`MICRO_ENGINE=fast`, tomas-jax `gpu-fast` 787c991). Transport is
 semi-Lagrangian, `sl` K=12. Radiation is RRTMGP + Mie (jax-rrtmgp 99d2d71 plus
 `patches/jax-rrtmgp-zenith.patch`), with `RAD_SOLAR=window_gq` at 3 nodes,
 trailing, `RAD_MODE=anomaly` and `RAD_T_FEEDBACK=0`. RH is computed over liquid
-(`MET_RH=liq`), with `INIT_BIN=so4` and `ADV_VPOS=1`. The JCM linking takes
+(`MET_RH=liq`), with `INIT_BIN=so4` and `ADV_VPOS=1`. The JCM linkings take
 water vapour from the climatology (`MET_Q=bc`, the default), because jcm-strat
 is dry. A dry run of each preset with its runs' scenario resolves to the knob
 values those run logs recorded.
 
-The model hour is CESM's no-leap hour since 1996-01-01 00Z under both presets
+**`jcm_online_numerical`** builds jcm-strat from the AL7h70 chain's own resolved
+Hydra config, with every term active (Jucker relaxation with the AL7h T_e
+correction, QBO nudging, ERA5 nudging below 400 hPa, Hines and Lott-Miller drag,
+the sponge), and starts it from the chain's 1 January checkpoint. jcm-strat
+needs Python 3.11 and JAX 0.10, and this repo runs JAX 0.6, so the model runs as
+a subprocess (`src/met/jcm_server.py`) under its own interpreter on the same
+GPU and passes 6-hourly frames over a pipe. The server keeps the year's ERA5
+nudging target (~29 GiB) in host memory, so it holds only a few GiB on the card
+it shares with the coupler. It imports `jcm_strat` and `jcm` from the
+`models/jcm-strat` submodule and refuses to start if they resolve anywhere else.
+MANIFEST.md has the design and the validation numbers.
+
+The model hour is CESM's no-leap hour since 1996-01-01 00Z under every preset
 (`H0=0`). JCM frames are matched by the same Y-M-D-H.
 
 ## Quick start
 
-**Install.** The two model repos are git submodules under `models/`, pinned to
-exact commits:
+**Install.** The model repos are git submodules under `models/`, pinned to
+exact commits: tomas-jax and jax-rrtmgp (every linking), and jcm-strat with its
+own nested jax-gcm submodule (only `jcm_online_numerical`):
 
 ```bash
 git clone --recursive https://github.com/reflective-org/AIDE-SAI.git
 cd AIDE-SAI
-# in an existing clone instead:  git submodule update --init
+# in an existing clone instead:  git submodule update --init --recursive
+# (to skip jcm-strat, which only jcm_online_numerical needs:
+#  git submodule update --init models/tomas-jax models/jax-rrtmgp)
 
 # REQUIRED, not optional: the zenith patch (see below for why it is a separate step)
 git -C models/jax-rrtmgp apply ../../patches/jax-rrtmgp-zenith.patch
@@ -168,6 +188,22 @@ A pass ends with `deps ok: [CudaDevice(id=0)]`. `[CpuDevice(id=0)]` with a
 harmless here, because `run_prod.py` adds the driver directory itself (see
 `--cuda-driver-lib`). Inside a run, though, CPU means months instead of hours.
 
+**For `jcm_online_numerical` only: a separate jcm-strat interpreter.** The JCM
+server cannot run in this repo's Python (JAX 0.6); it needs a Python 3.11 venv
+with jcm-strat's dependencies (JAX 0.10, dinosaur, hydra). jcm-strat's own
+`scripts/bootstrap_env.sh` builds one (`models/jcm-strat/.venv`, the default
+`JCM_PY`). The server imports `jcm_strat` and `jcm` from the submodule, not
+from that venv, so the venv supplies only the dependencies. The preset sets
+`JCM_PY`, `JCM_CACHE` (ERA5 nudging windows and jcm boundary files) and
+`JCM_SCRATCH` (JAX compile cache) to this machine's paths; elsewhere, pass
+`--jcm-py`, `--jcm-cache` and `--jcm-scratch`. To check the import path on CPU:
+
+```bash
+S=$REPO/models/jcm-strat
+JAX_PLATFORMS=cpu PYTHONPATH=$S:$S/external/jax-gcm /path/to/jcm-venv/bin/python \
+  $REPO/src/met/jcm_server.py --check-imports --jcm-strat $S
+```
+
 **Run.** Outputs go to the current directory, so make one directory per run
 under `runs/` (gitignored). `run_prod.py` refuses to start anywhere else inside
 the checkout. Launch long runs in a detached tmux session, one GPU per run:
@@ -186,7 +222,7 @@ tmux new-session -d -s eval_cesm_inj6 -c "$PWD" \
      --n-hours 17520 --out-tag cesm_inj6_30NS 2>&1 | tee run.log"
 ```
 
-Use `--preset jcm_numerical` for the JCM linking, with the same scenario flags. The 2-year
+Use `--preset jcm_numerical` (or `jcm_online_numerical`) for a JCM linking, with the same scenario flags. The 2-year
 runs also set `--frame-levels all`, which writes zonal-mean frames at every
 level for the lat-height figures. After a kill or crash, re-run the same
 command with `--resume 1`. A resume onto a checkpoint with a different
@@ -230,11 +266,13 @@ listed variables or flags at your own copies.
 |---|---|---|---|
 | CESM2 h1 hourly archive (FWHIST, f09; ~23 TB as archived) | `cesm_numerical`, at run time for U/V/OMEGA/T only (the climatology serves the rest) | `/data/cesm2.1.5_output/histSST/f.e21.FWHIST.f09_f09_mg17.atmos-scale_fixedSST_1996-2014.001/archive/atm/proc/tseries` | `CESM_DIR`, `CESM_PREFIX`, `CESM_SUF`. Layout: `$CESM_DIR/hour_1/$CESM_PREFIX.h1.<VAR>$CESM_SUF` ([inputs/README.md](./inputs/README.md)) |
 | CESM climatology `bc_clim.npz` (~3.2 GB) | `cesm_numerical` | `inputs/bc_clim/bc_clim.npz` (in the checkout, gitignored) | `--clim-file`. Build with `scripts/met/make_bc_climatology.py`, a one-time pass over the archive's monthly stream plus an h1 sub-sample for H2SO4 |
-| jcm-strat run directory (AL7h70 chain) | `jcm_numerical` | `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70` (read-only) | `--jcm-dir` |
-| JCM-grid climatology `bc_clim_jcm.npz` (~1.4 GB) | `jcm_numerical` | `inputs/bc_clim/bc_clim_jcm.npz` (in the checkout, gitignored) | `--clim-file`. Build from `bc_clim.npz` with `scripts/met/regrid_clim_to_grid.py` (command in its docstring, ~20 s). The run refuses a climatology whose grid differs from JCM's |
-| RRTMGP k-distributions | both | inside `models/jax-rrtmgp` | (comes with the submodule) |
+| jcm-strat run directory (AL7h70 chain) | `jcm_numerical`; `jcm_online_numerical` (only its 1 January checkpoints, the last output frame before them, and the 1996 segment's resolved Hydra config) | `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70` (read-only) | `--jcm-dir`, `--jcm-template` |
+| jcm-strat interpreter (Python 3.11 venv) | `jcm_online_numerical` | `/data/JCM_stripped/jcm-strat/.venv/bin/python` (set by the preset) | `--jcm-py` |
+| jcm-strat caches: `era5/` (regridded ERA5 nudging windows, ~29 GiB per year; fetched on first use), `huggingface/` (jcm boundary files) | `jcm_online_numerical` | `/data/JCM_stripped/jcm-strat/cache` (set by the preset) | `--jcm-cache`; the JAX compile cache is `--jcm-scratch` |
+| JCM-grid climatology `bc_clim_jcm.npz` (~1.4 GB) | `jcm_numerical`, `jcm_online_numerical` | `inputs/bc_clim/bc_clim_jcm.npz` (in the checkout, gitignored) | `--clim-file`. Build from `bc_clim.npz` with `scripts/met/regrid_clim_to_grid.py` (command in its docstring, ~20 s). The run refuses a climatology whose grid differs from JCM's |
+| RRTMGP k-distributions | all | inside `models/jax-rrtmgp` | (comes with the submodule) |
 
-The JCM linking opens no CESM archive file at run time. CESM enters only
+The JCM linkings open no CESM archive file at run time. CESM enters only
 through the climatology. If you pass a `CLIM_FILE` by exporting it rather than
 with `--clim-file`, the launcher warns that the export overrides the preset.
 That is expected; the warning exists to catch an export left over in a shell
@@ -266,8 +304,20 @@ python3 $REPO/scripts/utils/run_summary.py <TAG>   # per-stage cost from the log
 
 All three read `coupled_*_<TAG>.npz` (or the log) from the **current working
 directory** and write beside it. `plot_run.py` takes the grid from the run's
-own files, so it works for both linkings. Compare burdens across the two grids
+own files, so it works for every linking. Compare burdens across the two grids
 only in kg. Never commit `.npz`, `.png` or `.gif`.
+
+Multi-run comparisons live in `scripts/analysis/` (see its
+[README](./scripts/analysis/README.md)). `summary_2yr/` turns a 2-year
+injection run, its year-1 re-run with full 3-D frames, and a control into
+figures and a `metrics.json`. It runs in three steps (`reduce3d.py`,
+`reduce_daily.py`, `make_figs.py`), about 3 min on CPU. The figures cover
+forcing, AOD, burdens, the sulfur budget, heating, lat-pressure sections, maps
+and size distributions. `jcm_vs_cesm_2yr.py` compares the same scenario on
+`cesm_numerical` and `jcm_numerical`. Both write to the current directory, so
+run them from an analysis directory under `runs/`, passing the run directories
+as flags (defaults are `runs/<tag>`). They show how runs differ; scoring
+against observations belongs in AIDE-eval.
 
 Before you read any number, know these standing caveats, which are in full in
 MANIFEST.md:
@@ -282,27 +332,33 @@ MANIFEST.md:
 ## Repository layout
 
 ```
-configs/        linking presets (cesm_numerical.env = default, jcm_numerical.env) -- configs/README.md
+configs/        linking presets (cesm_numerical.env = default, jcm_numerical.env,
+                jcm_online_numerical.env) -- configs/README.md
 src/            everything that advances the coupled state; flat module names on purpose
   run_prod.py     the launcher: preset, pins, knobs -> exec driver_fast.py
   driver_fast.py  production entry point; swaps the microphysics engine into coupling.py
   coupling.py     the model: grid, IC/BC, budget, diagnostics, main loop
   _paths.py       puts each src/ subdirectory on sys.path; REPO_ROOT/MODELS/INPUTS anchors
-  met/            met_jcm.py (MET_SRC=jcm), bc_clim.py (BC_SRC=clim)
+  met/            met_jcm.py (MET_SRC=jcm), met_jcm_online.py + jcm_server.py
+                  (MET_SRC=jcm_online; the server runs in jcm-strat's interpreter),
+                  bc_clim.py (BC_SRC=clim)
   advection/      sl_lr.py + sl_core.py (sl), fct_lr.py (lr), ffsl_lr.py (ffsl),
                   fct_fast.py, fct_core.py (legacy; only for test_conservation.py)
   microphysics/   tomas_fast.py, the tomas_jax.fast adapter
   settling/       settling.py
   radiation/      radiation.py (RRTMGP + Mie), rad_cache.py / rad_cache_build.py
-models/         git submodules: tomas-jax (gpu-fast 787c991), jax-rrtmgp (99d2d71)
+models/         git submodules: tomas-jax (gpu-fast 787c991), jax-rrtmgp (99d2d71),
+                jcm-strat (dev f3c2070, with external/jax-gcm 35dc199; jcm_online only)
 patches/        jax-rrtmgp-zenith.patch, applied after `git submodule update --init`
 scripts/        everything that reads a run or builds an input; a run never imports it
   met/            make_bc_climatology.py, regrid_clim_to_grid.py
   radiation/      build_ref_cache.py and the radiation-cache / solar-artifact checks
+  analysis/       summary_2yr/ (injection vs control), jcm_vs_cesm_2yr.py (two linkings)
   utils/          plot_run.py, gif_run.py, run_summary.py
   validation/     harnesses; test_conservation, test_physics_math, test_configs run in CI
 docs/           process docs (PROCESSES, RADIATION, TRANSPORT_SL_HANDOFF, ...) -- MANIFEST wins
-inputs/         small static inputs (H2SO4 refractive indices) and the radiation cache
+inputs/         small static inputs (H2SO4 refractive indices, Natural Earth coastlines)
+                and the radiation cache
 runs/           one directory per OUT_TAG (gitignored)
 outputs/        derived figures and tables (gitignored)
 ```
@@ -317,7 +373,7 @@ knob reference is [docs/CONFIGURATION.md](./docs/CONFIGURATION.md).
 
 ## Not part of this repo (yet)
 
-This repository holds the two numerical linkings. These are not part of it:
+This repository holds the three numerical linkings. These are not part of it:
 
 - the TOMAS microphysics emulator (`MICRO_ENGINE=emulator`), the engine A/B
   (`MICRO_REF`) and the training samplers;

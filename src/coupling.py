@@ -382,14 +382,45 @@ JCM_DIR = os.environ.get('JCM_DIR', '/data/JCM_stripped/jcm-strat/runs/p31/p31_A
 # and its specific_humidity is a passive constant 2.32e-3 kg/kg (met_jcm.py).
 # 'met': JCM's own field (only meaningful for a moist JCM run).
 MET_Q = os.environ.get('MET_Q', 'bc').lower()
-if MET_SRC not in ('cesm', 'file', 'jcm'):
-    raise SystemExit(f"MET_SRC={MET_SRC!r} is not valid: cesm | file | jcm")
+# 2026-11-18 (live JCM): MET_SRC=jcm_online. The same fields on the same
+# grid as MET_SRC=jcm, but from the jcm-strat model RUNNING alongside this one
+# (src/met/met_jcm_online.py + jcm_server.py) with the AL7h configuration and all
+# of its forcing active -- ERA5 nudging below 400 hPa, QBO nudging, the AL7h T_e
+# correction, gravity-wave drag -- instead of from that run's stored output.
+# JCM runs in its own interpreter (JCM_PY, a venv built for jcm-strat) as a
+# subprocess on the same GPU, started at 1 January 00Z of the first hour read
+# from a jcm checkpoint: this run's own (JCM_WORK/jcm_YYYY0101.ckpt, written at
+# every year end) or else the JCM_DIR chain's. JCM_TEMPLATE: the resolved Hydra
+# config the model is built from (the AL7h70 1996 segment's). Everything said
+# above for MET_SRC=jcm (grid, BC_SRC=clim, MET_Q, 6-hourly) holds for both.
+# The jcm-strat CODE (jcm_strat and, from its external/jax-gcm submodule, jcm)
+# is the jcm-strat model slot: JCM_STRAT_PATH, set by the preset's #@submodule
+# line (default models/jcm-strat); the server imports both from there, never
+# from the venv's own installs. Its machine data is not in a checkout and has
+# its own knobs: JCM_CACHE (ERA5 windows in era5/, jcm boundary files in
+# huggingface/), JCM_SCRATCH (JAX compile cache). JCM_TE_CORRECTION: the AL7h
+# correction file, default the slot's tracked copy (the template's path names a
+# jcm-strat worktree that no longer exists). None of these is read unless
+# MET_SRC=jcm_online.
+JCM_TEMPLATE = os.environ.get('JCM_TEMPLATE', JCM_DIR.rstrip('/') + '/'
+                              + os.path.basename(JCM_DIR.rstrip('/'))
+                              + '_19960101/.hydra/config.yaml')
+JCM_STRAT_PATH = os.path.abspath(os.environ.get('JCM_STRAT_PATH')
+                                 or os.path.join(_MODELS, 'jcm-strat'))
+JCM_PY = os.environ.get('JCM_PY') or os.path.join(JCM_STRAT_PATH, '.venv/bin/python')
+JCM_CACHE = os.environ.get('JCM_CACHE') or os.path.join(JCM_STRAT_PATH, 'cache')
+JCM_SCRATCH = os.environ.get('JCM_SCRATCH') or os.path.join(JCM_STRAT_PATH, 'scratch')
+JCM_WORK = os.environ.get('JCM_WORK', 'jcm_online')
+JCM_TE_CORRECTION = os.environ.get('JCM_TE_CORRECTION') or None   # None: the slot's AL7h.nc
+if MET_SRC not in ('cesm', 'file', 'jcm', 'jcm_online'):
+    raise SystemExit(f"MET_SRC={MET_SRC!r} is not valid: cesm | file | jcm | jcm_online")
+MET_JCM = MET_SRC in ('jcm', 'jcm_online')      # the JCM grid, whichever way it is fed
 if MET_Q not in ('bc', 'met'):
     raise SystemExit(f"MET_Q={MET_Q!r} is not valid: bc | met")
-if MET_SRC == 'jcm' and ADV_SL_HOURLY:
-    raise SystemExit("ADV_SL_HOURLY=1 needs hourly winds; MET_SRC=jcm output is 6-hourly")
-if MET_SRC == 'jcm' and os.environ.get('BC_SRC', 'cesm').lower() != 'clim':
-    raise SystemExit("MET_SRC=jcm needs BC_SRC=clim with CLIM_FILE on the JCM grid "
+if MET_JCM and ADV_SL_HOURLY:
+    raise SystemExit(f"ADV_SL_HOURLY=1 needs hourly winds; MET_SRC={MET_SRC} is 6-hourly")
+if MET_JCM and os.environ.get('BC_SRC', 'cesm').lower() != 'clim':
+    raise SystemExit(f"MET_SRC={MET_SRC} needs BC_SRC=clim with CLIM_FILE on the JCM grid "
                      "(scripts/met/regrid_clim_to_grid.py)")
 if MET_SRC == 'file' and not MET_DIR:
     raise SystemExit("MET_SRC=file needs MET_DIR (an emu_to_met.py output; that converter is not part of this repo)")
@@ -620,14 +651,18 @@ PHYS_CFG = np.array([float(WET_SETTLING), float(WET_OPTICS), float(SETTLE_ENABLE
                      # rather than the BC source (MET_Q=met). The grid itself is
                      # in the separate, REFUSED GRID_CFG stamp.
                      float(MET_SRC == 'jcm'),
-                     float(MET_Q == 'met')])
+                     float(MET_Q == 'met'),
+                     # 2026-11-18 (live JCM), appended: JCM run live
+                     # (MET_SRC=jcm_online) rather than read from its output.
+                     float(MET_SRC == 'jcm_online')])
 PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'MICRO_ENGINE=emulator', 'ADV_SCHEME=sl', 'RAD_ENGINE=emulator',
                           'ADV_SCHEME=ffsl', 'MET_SRC=file', 'BC_SRC=clim', 'ADV_PASSIVE',
                           'RAD_SOLAR', 'RAD_SOLAR_ALPHA', 'RAD_SOLAR_NODES',
                           'RAD_SOLAR_ALIGN', 'MICRO_ENGINE=full', 'ADV_SCHEME=lr',
                           'MET_RH', 'RAD_T_FEEDBACK', 'MICRO_DT', 'MICRO_NCOAG',
-                          'MICRO_COAG=adaptive', 'MICRO_FION', 'MET_SRC=jcm', 'MET_Q=met'])
+                          'MICRO_COAG=adaptive', 'MICRO_FION', 'MET_SRC=jcm', 'MET_Q=met',
+                          'MET_SRC=jcm_online'])
 ALPHA_COND = float(os.environ.get('ALPHA_COND', '1.0'))  # H2SO4 accommodation coeff (SAI box-model value)
 # ---- diurnal OH from a solar-zenith-angle curve (Hanisco et al. 2001, Fig. 1) ----
 # DEFAULT ON. The SO2+OH chemistry uses OH(theta) read off the paper's figure
@@ -1675,7 +1710,7 @@ def install_bc_source():
         _clim = bc_clim.ClimArchive(CLIM_FILE, MET_DIR)
         open_var = _clim.open_var
         print(f"=== BC_SRC=clim: no archive files; {_clim.describe()} ===", flush=True)
-    elif BC_SRC == 'clim' and MET_SRC == 'jcm':
+    elif BC_SRC == 'clim' and MET_JCM:
         # MET_SRC=jcm (2026-11-18, JCM grid support): the same per-variable
         # router, with the meteorology from a jcm-strat run directory instead of
         # the CESM archive. The met source also DEFINES the grid (lat, lon, the
@@ -1688,19 +1723,26 @@ def install_bc_source():
         # segment starts at 06Z on 1 January, so the year before H0 is indexed too
         _y0 = (bc_clim.ORIGIN + _dt.timedelta(hours=H0)).year
         _y1 = (bc_clim.ORIGIN + _dt.timedelta(hours=H0 + N_HOURS)).year
-        _jcm = met_jcm.JcmMet(JCM_DIR, list(range(_y0 - 1, _y1 + 1)))
+        if MET_SRC == 'jcm_online':
+            import met_jcm_online
+            _jcm = met_jcm_online.JcmOnlineMet(JCM_DIR, JCM_TEMPLATE, H0 + N_HOURS, JCM_WORK,
+                                               jcm_strat=JCM_STRAT_PATH, python=JCM_PY,
+                                               cache=JCM_CACHE, scratch=JCM_SCRATCH,
+                                               te_correction=JCM_TE_CORRECTION)
+        else:
+            _jcm = met_jcm.JcmMet(JCM_DIR, list(range(_y0 - 1, _y1 + 1)))
         _clim = bc_clim.ClimArchive(CLIM_FILE, None, ntime=_jcm.ntime)
         for _k in ('lat', 'lon', 'hyam', 'hybm'):
             _a, _b = getattr(_jcm, _k), getattr(_clim, _k)
             if _a.shape != _b.shape or not np.allclose(_a, _b, rtol=1e-6, atol=1e-9):
-                raise SystemExit(f"MET_SRC=jcm: CLIM_FILE {CLIM_FILE} is not on the JCM grid "
+                raise SystemExit(f"MET_SRC={MET_SRC}: CLIM_FILE {CLIM_FILE} is not on the JCM grid "
                                  f"({_k}: {_b.shape} vs {_a.shape}); build it with "
                                  f"scripts/met/regrid_clim_to_grid.py")
         _MET_VARS = ('U', 'V', 'OMEGA', 'T') + (('Q',) if MET_Q == 'met' else ())
 
         def open_var(var):
             return _jcm.open_var(var) if var in _MET_VARS else _clim.open_var(var)
-        print(f"=== MET_SRC=jcm + BC_SRC=clim: {'/'.join(_MET_VARS)} from {_jcm.describe()}; "
+        print(f"=== MET_SRC={MET_SRC} + BC_SRC=clim: {'/'.join(_MET_VARS)} from {_jcm.describe()}; "
               f"everything else (incl. {'' if MET_Q == 'met' else 'Q, '}O3, CH4, aerosol, gases, "
               f"surface) from the CESM {_clim.describe()} ===", flush=True)
     elif BC_SRC == 'clim':
@@ -1778,9 +1820,9 @@ def main():
     # it defines, stamped into the state checkpoint and REFUSED on a RESUME
     # mismatch (unlike PHYS_CFG, which only warns): a state on one grid is not
     # a state on another, and two grids can share (nlat, nlon, nlev) -- the
-    # geometry tuple alone would not see it. [met code (0 cesm, 1 file, 2 jcm),
+    # geometry tuple alone would not see it. [met code (0 cesm, 1 file, 2 jcm, 3 jcm_online),
     # nlat, nlon, nlev, first lat, last lat, top hPa, bottom hPa]. Append-only.
-    GRID_CFG = np.array([float({'cesm': 0, 'file': 1, 'jcm': 2}[MET_SRC]),
+    GRID_CFG = np.array([float({'cesm': 0, 'file': 1, 'jcm': 2, 'jcm_online': 3}[MET_SRC]),
                          float(nlat), float(nlon), float(nlev),
                          float(lat[0]), float(lat[-1]),
                          float(PLEV_PA[0] / 100), float(PLEV_PA[-1] / 100)])
@@ -1948,7 +1990,7 @@ def main():
                     'settling.rh_liquid_pct, the radiation optics\' formula)',
              'q': 'over ICE from Q, T_met and p (Goff-Gratch; legacy)',
              'cesm': 'the RELHUM field as is (over ice, at its own T; legacy)'}[MET_RH]
-          + f"; Q from {('JCM (MET_Q=met)' if MET_Q == 'met' else 'the CESM climatology (MET_Q=bc)') if MET_SRC == 'jcm' else 'the climatology' if BC_SRC == 'clim' else 'the archive'}",
+          + f"; Q from {('JCM (MET_Q=met)' if MET_Q == 'met' else 'the CESM climatology (MET_Q=bc)') if MET_JCM else 'the climatology' if BC_SRC == 'clim' else 'the archive'}",
           flush=True)
 
     # SZA-parabola OH grids (built once; SZA is lat/lon/time only, not level)
@@ -2464,7 +2506,9 @@ def main():
             _g_ck = tuple(float(x) for x in _ck['grid_cfg'])
             _g_now = tuple(float(x) for x in GRID_CFG)
             _n = min(len(_g_ck), len(_g_now))
-            _same = (_g_ck[0] == _g_now[0] or {_g_ck[0], _g_now[0]} <= {0.0, 1.0}) and \
+            # stored and live JCM share the grid (PHYS_CFG warns on the switch)
+            _same = (_g_ck[0] == _g_now[0] or {_g_ck[0], _g_now[0]} <= {0.0, 1.0}
+                     or {_g_ck[0], _g_now[0]} <= {2.0, 3.0}) and \
                 np.allclose(_g_ck[1:_n], _g_now[1:_n], rtol=1e-6, atol=1e-6)
             if not _same:
                 raise SystemExit(
@@ -2472,7 +2516,7 @@ def main():
                     + ', '.join(f'{k}={a:.6g}' for k, a in zip(GRID_CFG_KEYS, _g_ck))
                     + "\n    != this run's "
                     + ', '.join(f'{k}={b:.6g}' for k, b in zip(GRID_CFG_KEYS, _g_now)))
-        elif MET_SRC == 'jcm':
+        elif MET_JCM:
             raise SystemExit(f"  RESUME refused: {_state_f} has no grid stamp, i.e. it "
                              "predates MET_SRC=jcm and was written on the CESM grid")
         # Injection scenario must match too. The geometry check above cannot see it:

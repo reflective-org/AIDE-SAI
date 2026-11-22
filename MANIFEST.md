@@ -14,9 +14,11 @@ learned emulator. The end state is model-agnostic coupling: other meteorology
 sources (including emulated dycores, which would close the circulation feedback
 the current setup lacks) and other aerosol schemes (CARMA, MAM, GLOMAP).
 
-**What ships today is two linkings, both fully numerical** (§ Linkings are
-presets): CESM2 meteorology on the f09 grid (`configs/cesm_numerical.env`, the default)
-and jcm-strat meteorology on the JCM grid (`configs/jcm_numerical.env`). Both use the
+**What ships today is three linkings, all fully numerical** (§ Linkings are
+presets): CESM2 meteorology on the f09 grid (`configs/cesm_numerical.env`, the default),
+jcm-strat meteorology on the JCM grid read from the AL7h70 chain's output
+(`configs/jcm_numerical.env`), and the same jcm-strat model run live beside the
+coupler (`configs/jcm_online_numerical.env`). All use the
 CESM climatology for every non-wind field, `tomas_jax.fast` microphysics,
 semi-Lagrangian transport and RRTMGP + Mie radiation. Every default,
 measurement and caveat below refers to that stack unless it says otherwise.
@@ -31,13 +33,13 @@ The seams that make a slot swappable are deliberate and worth preserving:
 
 | slot | selector | what fills it today |
 |---|---|---|
-| meteorology (dycore) | `MET_SRC=cesm\|jcm\|file`. Every field goes through `open_var()`, and the met source also declares the GRID (`ds['lat']`, `ds['lon']`, `hyam/hybm`) | `cesm` (h1 archive, f09) and `jcm` (`src/met/met_jcm.py`, T63 Gaussian). `file` reads step-end frames from `MET_DIR` and is the seam an emulated dycore plugs into; no converter for it ships here |
+| meteorology (dycore) | `MET_SRC=cesm\|jcm\|jcm_online\|file`. Every field goes through `open_var()`, and the met source also declares the GRID (`ds['lat']`, `ds['lon']`, `hyam/hybm`) | `cesm` (h1 archive, f09) and `jcm` (`src/met/met_jcm.py`, T63 Gaussian). `jcm_online` (`src/met/met_jcm_online.py`) serves the same fields from the JCM model *running* in a subprocess (`src/met/jcm_server.py`, its own interpreter), so a live dycore is one more class behind the same surface, and a later one can reuse the server's line protocol. `file` reads step-end frames from `MET_DIR` and is the seam an emulated dycore plugs into; no converter for it ships here |
 | boundary climatology | `BC_SRC=cesm\|clim` + `CLIM_FILE` | `clim`: monthly CESM means on the model grid (`src/met/bc_clim.py`) |
 | aerosol IC/BC source | `AER_SRC=mam4\|carma` | `mam4` (the default): CESM's MAM4 output fields binned onto the TOMAS bins. This is NOT the MAM4-JAX package |
 | transport | `ADV_SCHEME=sl\|lr\|ffsl\|fast` | `sl`, K=12 |
 | microphysics | `MICRO_ENGINE=fast\|full`, swapped into `coupling.py` by `driver_fast.py` at import instead of branched inside it — which is why the driver is a separate file | `fast`: `tomas_jax.fast` (tomas-jax gpu-fast `787c991`) |
 | radiation | `RAD_ENGINE=rrtmgp`; `RAD=0` drops it and the `jax-rrtmgp` dependency entirely; `RAD_REF_CACHE` serves the archive-only half of the stage from disk | RRTMGP + Mie (jax-rrtmgp `99d2d71` + patch) |
-| which checkout fills a code slot | `#@submodule` lines in the preset (`TOMAS_JAX_PATH`, `RRTMGP_PATH`) | `models/tomas-jax`, `models/jax-rrtmgp` |
+| which checkout fills a code slot | `#@submodule` lines in the preset (`TOMAS_JAX_PATH`, `RRTMGP_PATH`, `JCM_STRAT_PATH`) | `models/tomas-jax`, `models/jax-rrtmgp`; `models/jcm-strat` (with its `external/jax-gcm`) for `MET_SRC=jcm_online` only |
 
 A new scheme goes in behind one of these selectors; a new combination of
 schemes is a new preset (next section), not a branch.
@@ -54,9 +56,12 @@ hard-coded launcher presets that are visible only by diffing branches.
 |---|---|---|---|---|
 | `cesm_numerical` (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz` | the 2-year CESM runs `fast_2yr_inj6_30NS` / `fast_2yr_ctrl`, bit-identically |
 | `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically |
+| `jcm_online_numerical` | jcm-strat AL7h **run live**, 6-hourly (`MET_SRC=jcm_online`; code from the `jcm-strat` slot, `models/jcm-strat` f3c2070; started from the same `JCM_DIR` chain) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19) — **statistically, not bitwise**: jcm-strat on GPU is not deterministic run to run (§ Code state) |
 
-Both also set `BC_SRC=clim`, `INIT_BIN=so4` and `ADV_VPOS=1`, and pin the same
-two slots. A dry run of each preset with those runs' scenario resolves the knob
+All three also set `BC_SRC=clim`, `INIT_BIN=so4` and `ADV_VPOS=1`, and pin the
+same tomas-jax and jax-rrtmgp slots; `jcm_online_numerical` also pins
+`jcm-strat` and sets three machine paths (`JCM_PY`, `JCM_CACHE`,
+`JCM_SCRATCH`). A dry run of each preset with those runs' scenario resolves the knob
 values their logs recorded (the `cesm_numerical` preset additionally states
 `MET_SRC=cesm`, which was coupling.py's default when those runs were made).
 The climatology files live in the checkout under `inputs/bc_clim/` and are
@@ -75,10 +80,15 @@ elsewhere, export `CLIM_FILE` as an absolute path.
   and the variables read by presence or truthiness (`DEBUG`, `PROFILE`,
   `OH_SUBSTEPS`, `MICRO_SUBSTEPS`, `DUMP_PREMICRO`, `INIT_SIGMA`), where writing
   out a "default" would change behaviour — `DEBUG=0` turns debugging ON. The
-  slot paths `TOMAS_JAX_PATH` / `RRTMGP_PATH` come only from `#@submodule`.
+  slot paths `TOMAS_JAX_PATH` / `RRTMGP_PATH` / `JCM_STRAT_PATH` come only from
+  `#@submodule`.
 - `#@submodule SLOT PATH SHA [patch=FILE]` — the checkout that fills a code
-  slot (`tomas-jax` → `TOMAS_JAX_PATH`, `jax-rrtmgp` → `RRTMGP_PATH`), the full
-  40-character commit it must be at, and a patch that must be applied on top.
+  slot (`tomas-jax` → `TOMAS_JAX_PATH`, `jax-rrtmgp` → `RRTMGP_PATH`,
+  `jcm-strat` → `JCM_STRAT_PATH`), the full 40-character commit it must be at,
+  and a patch that must be applied on top. Every preset pins tomas-jax and
+  jax-rrtmgp; `jcm-strat` is pinned exactly by the presets that select
+  `MET_SRC=jcm_online` (`SLOT_NEEDED_IF` in `run_prod.py`), so the other
+  linkings need neither the submodule checked out nor a commit they do not use.
 
 **What the launcher does with it.** It refuses to start if a slot's checkout is
 not at its pinned commit or the patch is not applied (`git apply --check
@@ -112,9 +122,10 @@ never a vendored copy. A different version of a dependency — e.g. tomas-jax
 (say `models/tomas-jax-dev`) plus a new preset whose `tomas-jax` slot points
 there; that is how a preset chooses its submodule.
 `scripts/validation/test_configs.py` (in CI) checks that every preset parses
-with the launcher's own loader, that each pin equals the commit the
-superproject records for that submodule (`git ls-tree`), that each named patch
-exists, and that the default preset exists.
+with the launcher's own loader, that it pins exactly the slots it needs, that
+each pin equals the commit the superproject records for that submodule (the
+index gitlink, `git ls-files --stage`; HEAD's on a clean checkout), that each
+named patch exists, and that the default preset exists.
 
 **Changing a preset or a default** needs an entry in this file (§ Code state)
 saying what changed, when and why, because it changes what a bare run means.
@@ -136,7 +147,8 @@ whose name collides with a module (`src/settling/` vs `settling.py`) without
 converting every import at the same time. See `docs/REPO_LAYOUT.md`.
 
 ```
-configs/                    the linkings: cesm_numerical.env (default), jcm_numerical.env; README.md
+configs/                    the linkings: cesm_numerical.env (default), jcm_numerical.env,
+                            jcm_online_numerical.env; README.md
 src/_paths.py               import-path setup; REPO_ROOT / MODELS / INPUTS anchors
 src/run_prod.py             the production launcher: applies a preset, verifies the
                             submodule pins, resolves and echoes every knob, execs
@@ -148,6 +160,11 @@ src/driver_fast.py          THE production entry point. Imports coupling.py and 
                             make_step; needs a dev checkout in the tomas-jax slot)
 src/coupling.py             the model: grid, IC/BC, budget, diagnostics, main loop
 src/met/met_jcm.py          MET_SRC=jcm: the jcm-strat reader, which also supplies the grid
+src/met/met_jcm_online.py   MET_SRC=jcm_online: a JcmMet subclass serving frames from a live
+                            jcm-strat run; starts and talks to jcm_server.py
+src/met/jcm_server.py       the live JCM, run in jcm-strat's own interpreter (Python 3.11,
+                            JAX 0.10) as a subprocess; imports nothing from this repo and
+                            asserts jcm_strat/jcm come from the jcm-strat slot
 src/met/bc_clim.py          BC_SRC=clim: serves the climatology through open_var()
 src/microphysics/tomas_fast.py  the tomas_jax.fast adapter (coupling state <-> FastState)
 src/advection/sl_lr.py      semi-Lagrangian split transport, ADV_SCHEME=sl (THE DEFAULT, K=12)
@@ -183,6 +200,9 @@ docs/                       CONFIGURATION (every env var), VALIDATION (the harne
                             check and a ruff errors-only gate
 models/tomas-jax            SUBMODULE, pinned 787c991 (branch gpu-fast). Sectional microphysics
 models/jax-rrtmgp           SUBMODULE, pinned 99d2d71. Radiative transfer (needs patches/)
+models/jcm-strat            SUBMODULE, pinned f3c2070 (branch dev), with its own nested
+                            submodule external/jax-gcm at 35dc199 (the `jcm` package).
+                            The live JCM for MET_SRC=jcm_online only
 patches/                    jax-rrtmgp-zenith.patch, the one carried dependency fix
 inputs/                     static input data (rad_data/: Palmer & Williams 1975 H2SO4
                             indices, as distributed in HITRAN Aerosols-2016) + provenance
@@ -211,8 +231,11 @@ mkdir -p runs/smoke && cd runs/smoke
 ../../src/run_prod.py --n-hours 6 --out-tag smoke   # smoke test (needs the CESM archive + CLIM_FILE)
 ```
 
-**Neither submodule is usable as a plain checkout of its default branch**, and
-`run_prod.py` refuses to start until both match the preset:
+**Neither tomas-jax nor jax-rrtmgp is usable as a plain checkout of its default
+branch**, and `run_prod.py` refuses to start until both match the preset. (The
+third submodule, `models/jcm-strat`, is needed only by `jcm_online_numerical`;
+`--recurse-submodules` also fetches its nested jax-gcm. To skip it:
+`git submodule update --init models/tomas-jax models/jax-rrtmgp`.)
 
 | repo | required state | why | symptom if skipped |
 |---|---|---|---|
@@ -235,7 +258,9 @@ launcher checks it.
 | `jax-rrtmgp` | separate repo (radiation) | `$RRTMGP_PATH`, same order. `RAD=0` skips radiation and this dependency |
 | CESM `h1` hourly meteorology + MAM4 | ~23 TB as archived | **On this machine (the shared H100 box), nothing to set** — the `coupling.py` defaults resolve to the FWHIST archive under `/data`, world-readable. Elsewhere: `$CESM_DIR` (+ `CESM_PREFIX`, `CESM_SUF`). Layout: `$CESM_DIR/hour_1/$CESM_PREFIX.h1.<VAR>$CESM_SUF`. Variables: `docs/COUPLING_VARIABLES.md`. Under the `cesm_numerical` preset only U/V/OMEGA/T are read hourly (one hour × band levels at a time, ~5.3 MB per variable-hour); everything else comes from `CLIM_FILE` |
 | boundary climatology (`CLIM_FILE`) | build product, GBs | `inputs/bc_clim/` in the checkout (gitignored; the preset's relative path resolves against the repo root); build with `scripts/met/make_bc_climatology.py` / `regrid_clim_to_grid.py` |
-| jcm-strat meteorology (`jcm_numerical` only) | separate model's output | `JCM_DIR` (default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`, this machine; read-only) |
+| jcm-strat meteorology (`jcm_numerical`; `jcm_online_numerical` reads its 1 January checkpoints and template config) | separate model's output | `JCM_DIR` (default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`, this machine; read-only), `JCM_TEMPLATE` |
+| jcm-strat code (`jcm_online_numerical` only) | separate repo (dycore) | the preset's `jcm-strat` slot → `$JCM_STRAT_PATH` (default `models/jcm-strat`), recursively initialised. Never put on this process's `sys.path`: only the server's `PYTHONPATH` |
+| jcm-strat interpreter and caches (`jcm_online_numerical` only) | machine state, not in any checkout | `JCM_PY` (a Python 3.11 venv with jcm-strat's dependencies; `models/jcm-strat/scripts/bootstrap_env.sh` builds one), `JCM_CACHE` (`era5/` nudging windows, `huggingface/` boundary files), `JCM_SCRATCH` (JAX compile cache). The preset sets this machine's `/data/JCM_stripped/jcm-strat/...` paths |
 | CUDA driver library | site-specific | `run_prod.py` puts `$CUDA_DRIVER_LIB` on `LD_LIBRARY_PATH`. Where libcuda.so.1 is not on the loader path JAX **silently falls back to CPU**; set the variable, or empty it for a normal CUDA install |
 
 An env var that is set but points nowhere is an error, not a silent fallback; a
@@ -389,6 +414,12 @@ CUDA_VISIBLE_DEVICES=<free> python3 $REPO/scripts/validation/validate_radiation.
 # SW/LW-split solve equals the default one; GPU + archive (docs/RADIATION.md)
 CUDA_VISIBLE_DEVICES=<free> python3 $REPO/scripts/radiation/test_rad_cache.py
 
+# MET_SRC=jcm_online: does the live JCM stay on the AL7h70 track? Band zonal-mean
+# U and T, online vs stored, next to the stored year-to-year spread (GPU; the
+# settings come from --preset jcm_online_numerical). Statistical by design:
+# jcm-strat on GPU is not deterministic run to run (§ Code state)
+CUDA_VISIBLE_DEVICES=<free> python3 $REPO/scripts/validation/validate_jcm_online.py --days 60
+
 # RAD_SOLAR against hourly radiation from a saved state (window alignment, the
 # window_gq shortwave/longwave split, error of k-day means; docs/RADIATION_ARTIFACT_EXPLORATION.md)
 CUDA_VISIBLE_DEVICES=<free> python3 $REPO/scripts/validation/check_solar_align.py --state S.npz --start 1997-01-01 --days 3 --out X
@@ -423,6 +454,103 @@ any directory. What they take from the cwd is the checkpoint they read
 `validate_radiation.py` drops its figure.
 
 ## Code state — why the defaults are what they are
+
+- **The live JCM linking (2026-11-20; `configs/jcm_online_numerical.env`,
+  `MET_SRC=jcm_online`; the code dates from 2026-11-18).** `MET_SRC=jcm_online`
+  serves exactly what `MET_SRC=jcm` serves, on the same grid, but from jcm-strat
+  **integrating alongside** the aerosol model instead of from the AL7h70 chain's
+  stored output, with every term of that configuration active: Jucker dry
+  relaxation + the AL7h T_e correction, QBO nudging to ERA5, ERA5 nudging of
+  u/v/T below 400 hPa (tau 6 h), Hines and Lott-Miller drag, the sponge, the
+  production tracers, the omega diagnostic; T63 L95, 12-min step. Still one-way
+  (the circulation never sees the aerosol); the server is where a heating
+  feedback would go through. Nothing in it is read unless `MET_SRC=jcm_online`:
+  the other presets are unchanged bit for bit (their `PHYS_CFG` gains one
+  trailing 0).
+  - **Why a subprocess.** jcm-strat needs its own interpreter (Python 3.11,
+    JAX 0.10.2, jcm, dinosaur) and this repo runs on JAX 0.6.2 / Python 3.10:
+    they cannot share a process. `met_jcm_online.JcmOnlineMet` (a
+    `met_jcm.JcmMet` subclass, so grid, level flip, calendar mapping and `MET_Q`
+    are shared) starts `src/met/jcm_server.py` under `JCM_PY` on the same GPU and
+    reads each 6-hourly frame (five L95 fields, 28 MB) over a pipe. The server
+    imports nothing from this repo; its log goes to stderr, i.e. into the run log.
+  - **Where jcm-strat comes from.** A new model slot, `jcm-strat`
+    (`JCM_STRAT_PATH`): the submodule `models/jcm-strat` at f3c2070 (branch
+    `dev`), whose own submodule `external/jax-gcm` (35dc199) is the `jcm`
+    package. The server's `PYTHONPATH` is exactly those two directories, so
+    `jcm_strat` and `jcm` come from the pinned checkout and not from the venv's
+    editable installs (which point at whatever checkout the venv was built
+    from); the server prints both `__file__`s and refuses to start if either
+    resolves outside the slot (`jcm_server.py --check-imports` runs only that
+    check). Only presets that select `MET_SRC=jcm_online` pin the slot
+    (`SLOT_NEEDED_IF`), so the other linkings need neither the checkout nor its
+    ~0.6 GB of history. What a checkout cannot hold is machine state and has
+    its own knobs, set by the preset to this machine's paths: `JCM_PY` (the
+    interpreter: a venv with jcm-strat's dependencies), `JCM_CACHE` (`era5/` =
+    the regridded ERA5 nudging windows, `huggingface/` = jcm boundary files) and
+    `JCM_SCRATCH` (JAX compile cache). The AL7h T_e correction is a tracked
+    file of the slot (`JCM_TE_CORRECTION` defaults to it; the chain's config
+    names a jcm-strat worktree that no longer exists). The template config
+    itself belongs to the chain, `JCM_DIR`, and so does one machine path inside
+    it that no knob overrides: the QBO nudging reference
+    (`qbo.era5_glob`, `/data/JCM_stripped/jcm-strat/cache/era5_ref/...` on this
+    machine). On another machine, use a template whose `era5_glob` points at
+    your copy (`JCM_TEMPLATE`).
+  - **What it builds.** The chain's own resolved Hydra config (`JCM_TEMPLATE`,
+    default the `<chain>_19960101` segment's `.hydra/config.yaml`) with only what
+    the chain changed per segment: start time, run length, QBO year, `init.file`.
+    Before building it installs the same policies `jcm_strat.main` does
+    (mass-fixer exclusions, health policy, calendar, dot precision, level table).
+    Like the chain, it builds one model per calendar year and, at each year end,
+    writes a jcm checkpoint (`JCM_WORK/jcm_<YYYY>0101.ckpt`, default
+    `jcm_online/` in the run directory) and starts the next year from it.
+  - **Start and RESUME.** The server starts lazily, on the first frame read, in
+    the calendar year of that hour, from this run's own `jcm_<YYYY>0101.ckpt` if
+    present (so a RESUME continues the online trajectory), else the chain's
+    `<YYYY-1>0101/checkpoint.ckpt`. An hour inside the year is reached by
+    integrating forward from 1 January (~3 s per simulated day). The frame AT the
+    init instant cannot be produced without stepping; it is the donor's last
+    output frame (the same state), stored beside our own checkpoints as
+    `.frame0.npz`.
+  - **Memory: the ERA5 nudging target stays on the host.** jcm keeps the year's
+    ERA5 nudging target (±1 day, 29 GiB) on the device, and its compiled step
+    asks ~30 GiB more; next to the aerosol model on one card that ran out of
+    memory. The server loads the target onto the CPU device and hands each
+    6-hour resume a fixed 4-sample slice starting one sample before it (the same
+    BY_DATE 'pad' lookups, one compile). The server then holds a few GiB on the
+    card; a 6-hour JCM step costs ~0.6 s after compilation.
+  - **Not bit-reproducible, and cannot be.** jcm-strat on GPU is not
+    deterministic run to run: two identical stock `python -m jcm_strat.main`
+    runs from the 1995 checkpoint differ by 2.8 m/s in u after 6 h and 70 m/s
+    after 24 h (single upper-level points, NH high latitudes; RMS 0.4 m/s), and
+    the stored chain was made with another dinosaur build besides. So this
+    linking is validated **statistically, never bitwise**, and a rerun of the
+    preset does not reproduce its provenance run bit for bit.
+    `scripts/validation/validate_jcm_online.py` (60 days from 1996-01-01, zonal
+    means on the 47 band levels 1–138 hPa) gives RMS online − stored of
+    0.03 m/s / 0.00 K at day 1, 0.7 m/s / 0.33 K at day 10, 2.1 m/s / 1.2 K at
+    day 60 (peak 7.1 m/s / 3.4 K at day 40), against 8–14 m/s / 2.7–5.7 K
+    between the stored 1996 and 1997 on the same dates: on average 0.21x (U) and
+    0.34x (T) the year-to-year spread. ERA5 and QBO nudging keep it on the
+    AL7h70 track; the free polar vortex drifts most. A full year (1996, 18 min
+    of JCM on the shared H100) ends 3.6 m/s from the stored chain in band
+    zonal-mean U; the 1996 → 1997 rollover (own checkpoint, rebuild) continues
+    smoothly (3.8 → 4.1 m/s), but the rebuild took 356 s against 58 s for the
+    first build: ~5 % of a year's wall time, not yet understood.
+  - **Stamps.** `GRID_CFG` met code 3; a RESUME between `jcm` (2) and
+    `jcm_online` (3) is allowed (same grid). `PHYS_CFG` gains
+    `MET_SRC=jcm_online` (appended; warns on a switch).
+  - **Provenance.** The 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19; the
+    2-year JCM run's scenario: 6 Tg SO2/yr, 55 hPa, 30N/30S mirrored, 180E,
+    `--frame-levels all`) ran with these knob values, jcm-strat f3c2070 (jax-gcm
+    35dc199) and the same tomas-jax / jax-rrtmgp pins. A dry run of the preset
+    with that scenario resolves every value its log header recorded; the only
+    differences are the absolute `CLIM_FILE` path (same file, md5-identical),
+    the tag, and the slot and machine-path variables the launcher now echoes
+    (`JCM_STRAT_PATH`, `JCM_PY`, `JCM_CACHE`, `JCM_SCRATCH`, `TOMAS_JAX_PATH`,
+    `RRTMGP_PATH`), which resolve to the interpreter, caches and commits that run
+    used. Its server was started with the same template, init checkpoint, frame0
+    and a byte-identical T_e correction file.
 
 - **AIDE-SAI starts (2026-11-20).** The tree runs both 2-year linkings, and
   the presets reproduce the 2-year CESM and JCM runs bit-identically (the JCM

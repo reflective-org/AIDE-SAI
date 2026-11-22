@@ -36,7 +36,7 @@ request to `main`.
 |---|---|
 | `test_conservation.py` | Lin-Rood transport conserves tracer mass to roundoff for any wind field; the cos(φ) area metric, grid spacing, continuity-derived omega and polar caps all behave; the legacy sweeps match `fct_core.py` bit for bit. Guards the four bugs behind the leak |
 | `test_physics_math.py` | closed-form settling physics: Tang solution density, wet growth factor (1.087–2.566, cross-checked against the run header), slip-corrected fall speed, and that the implicit sweep changes the burden *only* by its bottom outflow |
-| `test_configs.py` | every preset in `configs/` parses with `run_prod.py`'s own loader (known knobs only, no forbidden keys, well-formed `#@submodule` lines), pins each registered submodule to exactly the commit the superproject records (`git ls-tree`), names patch files that exist, and the default preset exists |
+| `test_configs.py` | every preset in `configs/` parses with `run_prod.py`'s own loader (known knobs only, no forbidden keys, well-formed `#@submodule` lines), pins exactly the slots it needs (every slot; `jcm-strat` exactly when `MET_SRC=jcm_online`), pins each registered submodule to exactly the commit the superproject records (the index gitlink, `git ls-files --stage`), names patch files that exist, and the default preset exists |
 
 ```bash
 python3 $REPO/scripts/validation/test_conservation.py     # ~12 s
@@ -69,6 +69,7 @@ when chasing a specific question, not routinely.
 | `ch4_truth_test.py` | how well does a transport scheme reproduce CESM's own CH4 over a year? The test that made `sl` K=12 the default ([PROCESSES.md](./PROCESSES.md) §1.10) | CESM archive + GPU; writes `outputs/ch4_truth/<tag>.npz` |
 | `validate_radiation.py` | how does our radiation compare against CESM's own heating rates and extinction? | CESM archive + `jax-rrtmgp` + GPU. Writes a `.png` |
 | `test_radiation.py` | does the radiation driver run on one real CESM hour without NaNs? | CESM archive + `jax-rrtmgp` + GPU |
+| `validate_jcm_online.py` | does `MET_SRC=jcm_online` (jcm-strat run live) stay on the stored AL7h70 track? Band zonal-mean U and T, online − stored, next to the stored year-to-year spread at the same dates. **Statistical by design**: jcm-strat on GPU is not deterministic run to run, so this linking is never checked bitwise. Reference: 0.21x (U), 0.34x (T) the year-to-year spread over 60 days (MANIFEST.md) | the jcm-strat slot + `JCM_PY` venv + the AL7h70 chain + GPU; settings from `--preset jcm_online_numerical`; run from `runs/<tag>/` |
 | `check_solar_window.py`, `check_solar_accum.py`, `check_solar_gq_sw.py`, `check_solar_gq_lw.py`, `check_solar_align.py` | `RAD_SOLAR` modes against hourly radiation on frozen aerosol states: per day, accumulated over days, the one-longwave path, SW vs LW error, centred vs trailing window ([RADIATION_ARTIFACT_EXPLORATION.md](./RADIATION_ARTIFACT_EXPLORATION.md)) | CESM archive + GPU + a state file |
 | `scripts/radiation/test_rad_cache.py` | pass/fail: a cached reference hour is bit-identical to the computed one; the split solve equals the default | CESM archive + GPU + a day-30 state (`runs/chemdump/debug_nucleation/premicro_state_step120.npz` on the development machine) |
 

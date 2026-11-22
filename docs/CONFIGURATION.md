@@ -26,8 +26,13 @@ command line. The linking is a preset file in `configs/`;
 |---|---|---|
 | `cesm_numerical` (default) | `MET_SRC=cesm`, `BC_SRC=clim`, `CLIM_FILE=inputs/bc_clim/bc_clim.npz`, `INIT_BIN=so4`, `ADV_VPOS=1` | tomas-jax `787c991` (gpu-fast), jax-rrtmgp `99d2d71` + `patches/jax-rrtmgp-zenith.patch` |
 | `jcm_numerical` | `MET_SRC=jcm`, `BC_SRC=clim`, `CLIM_FILE=inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded onto the JCM grid), `INIT_BIN=so4`, `ADV_VPOS=1` | the same two commits |
+| `jcm_online_numerical` | as `jcm_numerical` but `MET_SRC=jcm_online` (jcm-strat run live in a subprocess), plus the machine paths `JCM_PY`, `JCM_CACHE`, `JCM_SCRATCH` (`/data/JCM_stripped/jcm-strat/...` on the development machine) | the same two commits, plus jcm-strat `f3c2070` (`models/jcm-strat`, with its nested `external/jax-gcm` `35dc199`) |
 
-The `CLIM_FILE` paths in both presets are relative to the checkout:
+`jcm_online_numerical` is **not bit-reproducible**: jcm-strat on GPU is not
+deterministic run to run, so the linking is validated statistically
+(`scripts/validation/validate_jcm_online.py`), never bitwise (MANIFEST.md).
+
+The `CLIM_FILE` paths in the presets are relative to the checkout:
 `run_prod.py` resolves a relative value of any PATH-type knob in a preset against
 the repo root, so a preset does not depend on where the run is launched. The two
 files are gitignored (`inputs/bc_clim/`); build them with `scripts/met/` (see
@@ -66,8 +71,8 @@ its values are exported they outrank the next preset (configs/README.md explains
 A preset cannot set the scenario and run control (`INJ_*`, `N_HOURS`, `N_DAYS`,
 `OUT_TAG`, `RESUME`, `H0`), the variables the code reads by presence
 (`DEBUG`, `PROFILE`, `OH_SUBSTEPS`, `MICRO_SUBSTEPS`, `DUMP_PREMICRO`,
-`INIT_SIGMA`), or the slot paths (`TOMAS_JAX_PATH`, `RRTMGP_PATH`, which come
-only from its `#@submodule` lines, so they cannot escape the pin check). It can
+`INIT_SIGMA`), or the slot paths (`TOMAS_JAX_PATH`, `RRTMGP_PATH`,
+`JCM_STRAT_PATH`, which come only from its `#@submodule` lines, so they cannot escape the pin check). It can
 set only knobs in `KNOBS`. `--no-verify-pins` skips the pin check; the header
 then says `(NOT VERIFIED)`, and the run is not the preset's model.
 
@@ -90,7 +95,7 @@ module default.
 **SO2 + H2SO4** in the gas phase, 40 bins; organics, NH4/NH3, nitrate, dust and
 sea salt are not carried, and ions are off.
 
-- `MICRO_ENGINE=fast` (**the default, and what both presets run**):
+- `MICRO_ENGINE=fast` (**the default, and what every preset runs**):
   `tomas_jax.fast` from the tomas-jax `gpu-fast` commit the presets pin,
   through `src/microphysics/tomas_fast.py`
   ([PROCESSES.md](./PROCESSES.md) §2). Its knobs are read by `tomas_fast.py` and
@@ -128,13 +133,16 @@ sub-steps, `fct_lr`'s flux-form vertical sweep) is the default since the CH4
 truth test ([PROCESSES.md](./PROCESSES.md) §1.10); the `ADV_SL_*` knobs apply to
 it. `lr` (Lin-Rood flux form at CFL sub-steps), `ffsl` (`ADV_FFSL_*`) and `fast`
 remain selectable. `ADV_CFL` (0.5) and `ADV_F32` (1) are bound by both entry
-points; `ADV_VPOS=1` is set by both presets and must stay on
+points; `ADV_VPOS=1` is set by every preset and must stay on
 ([VALIDATION.md](./VALIDATION.md)).
 
 **Meteorology and boundaries.** `MET_SRC` and `BC_SRC` are separate seams:
-`MET_SRC` supplies U/V/OMEGA/T (and, for `jcm`, the grid), `BC_SRC` every other
-field. `JCM_DIR` and `MET_Q` apply only under `MET_SRC=jcm`, `MET_DIR` only
-under `MET_SRC=file`, `CLIM_FILE` only under `BC_SRC=clim`.
+`MET_SRC` supplies U/V/OMEGA/T (and, for `jcm` and `jcm_online`, the grid),
+`BC_SRC` every other field. `JCM_DIR` and `MET_Q` apply only under
+`MET_SRC=jcm|jcm_online`; `JCM_TEMPLATE`, `JCM_PY`, `JCM_CACHE`, `JCM_SCRATCH`,
+`JCM_TE_CORRECTION`, `JCM_WORK` and the `JCM_STRAT_PATH` slot only under
+`MET_SRC=jcm_online`; `MET_DIR` only under `MET_SRC=file`, `CLIM_FILE` only
+under `BC_SRC=clim`.
 [COUPLING_VARIABLES.md](./COUPLING_VARIABLES.md) lists what each one serves.
 
 **Radiation.** Only `RAD_ENGINE=rrtmgp` exists here. `RAD_MODE` is `anomaly`
@@ -161,7 +169,9 @@ emulator training; the labelling and training are not part of this repo (yet). D
 ## Resuming across a changed configuration
 
 `INJ_*` mismatches against the checkpoint are **refused**, and so is a
-different grid (`GRID_CFG`, e.g. resuming a `jcm_numerical` checkpoint under `cesm_numerical`). The
+different grid (`GRID_CFG`, e.g. resuming a `jcm_numerical` checkpoint under `cesm_numerical`).
+`jcm_numerical` and `jcm_online_numerical` share a grid, so a RESUME between
+them is allowed, with a `PHYS_CFG` warning (`MET_SRC=jcm_online`). The
 physics-mode flags (`WET_SETTLING`, `WET_OPTICS`, `SETTLE`, `ADV_VPOS`, and the
 rest of `PHYS_CFG`) only **warn** — the state is still valid, the model
 integrating it forward just changes at the seam. The arrays are append-only, so
@@ -169,12 +179,14 @@ adding a field never locks out an older checkpoint.
 
 ## Flag ↔ environment variable cross-reference
 
-Generated from the `KNOBS` and `GROUPS` tables in `src/run_prod.py` and the two
+Generated from the `KNOBS` and `GROUPS` tables in `src/run_prod.py` and the
 preset files (2026-11-20); the **meaning** column is the `--help` text. The
 **launcher** column is `run_prod.py`'s run-control default; a dash means the
 launcher sets nothing and the module default (stated in the help text where it
 has one) stands. The **preset** column shows the value both presets set, or
-`cesm_numerical` / `jcm_numerical` where they differ.
+`cesm_numerical` / `jcm_numerical` where they differ. `jcm_online_numerical`
+sets what `jcm_numerical` sets everywhere except in the meteorology table, which
+has a column of its own.
 
 ### run control
 
@@ -309,15 +321,21 @@ has one) stands. The **preset** column shows the value both presets set, or
 
 ### meteorology source and boundary climatology (set by the preset)
 
-| flag | variable | launcher | `cesm_numerical` / `jcm_numerical` preset | meaning |
-|---|---|---|---|---|
-| `--met-src` | `MET_SRC` | — | `cesm` / `jcm` | where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src |
-| `--jcm-dir` | `JCM_DIR` | — | — | MET_SRC=jcm: the jcm-strat run directory (default /data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70, the AL7h chain); read-only |
-| `--met-q` | `MET_Q` | — | — | MET_SRC=jcm: water vapour from the BC source (bc, default: the regridded CESM climatology -- jcm-strat is dry and its q is a passive constant) or from JCM (met) |
-| `--met-dir` | `MET_DIR` | — | — | MET_SRC=file: directory holding u/v/omega/T.npy + meta.json |
-| `--met-rh` | `MET_RH` | — | — | RH seen by settling, the microphysics' water uptake (full chain) and the FRAME3D wet diagnostics, recomputed every step from Q, T and p: liq (default) = over liquid water, Tabazadeh 1997 eq. 1. The radiation's wet optics ignore MET_RH and always compute liquid RH from Q themselves; q = over ice (the old MET_SRC=file default; 1.6-1.9x liq in the band); cesm = the archive's RELHUM as is |
-| `--bc-src` | `BC_SRC` | — | `clim` | where every non-wind boundary field comes from (set by the preset): clim = the monthly climatology in CLIM_FILE (scripts/met/make_bc_climatology.py); cesm (module default) = the hourly archive |
-| `--clim-file` | `CLIM_FILE` | — | `inputs/bc_clim/bc_clim.npz` / `inputs/bc_clim/bc_clim_jcm.npz` | BC_SRC=clim: the climatology, on the MODEL grid (set by the preset; the jcm_numerical preset uses the CESM climatology regridded onto the JCM grid by scripts/met/regrid_clim_to_grid.py) |
+| flag | variable | launcher | `cesm_numerical` / `jcm_numerical` preset | `jcm_online_numerical` preset | meaning |
+|---|---|---|---|---|---|
+| `--met-src` | `MET_SRC` | — | `cesm` / `jcm` | `jcm_online` | where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); jcm_online = the same fields and grid from the jcm-strat AL7h model integrated LIVE beside this one (src/met/jcm_server.py, a subprocess under --jcm-py on the same GPU; code from the jcm-strat slot), started from the --jcm-dir chain's 1 January checkpoint; file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src |
+| `--jcm-dir` | `JCM_DIR` | — | — | — | MET_SRC=jcm\|jcm_online: the jcm-strat run directory (default /data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70, the AL7h chain); read-only. jcm_online reads only its 1 January checkpoints, their last output frame and the template segment's output (for the grid) |
+| `--jcm-template` | `JCM_TEMPLATE` | — | — | — | MET_SRC=jcm_online: the resolved Hydra config the live JCM is built from (default <jcm-dir>/<chain>_19960101/.hydra/config.yaml); start time, QBO year and init file are set per year |
+| `--jcm-py` | `JCM_PY` | — | — | `/data/JCM_stripped/jcm-strat/.venv/bin/python` (machine path) | MET_SRC=jcm_online: the interpreter the JCM server runs under, a Python 3.11 venv with jcm-strat's dependencies (JAX 0.10; default <JCM_STRAT_PATH>/.venv/bin/python). Machine-specific: a submodule checkout has no venv. jcm_strat and jcm themselves are imported from the slot, not from this venv |
+| `--jcm-cache` | `JCM_CACHE` | — | — | `/data/JCM_stripped/jcm-strat/cache` (machine path) | MET_SRC=jcm_online: jcm-strat's data cache, holding era5/ (the regridded ERA5 nudging windows, JCM_ERA5_CACHE) and huggingface/ (jcm boundary files, HF_HOME) (default <JCM_STRAT_PATH>/cache). Machine-specific; a missing ERA5 window is downloaded and regridded on first use |
+| `--jcm-scratch` | `JCM_SCRATCH` | — | — | `/data/JCM_stripped/jcm-strat/scratch` (machine path) | MET_SRC=jcm_online: jcm's scratch directory, $SCRATCH (its JAX compilation cache is $SCRATCH/jcm-jax-cache; default <JCM_STRAT_PATH>/scratch). Machine-specific; cannot change results |
+| `--jcm-te-correction` | `JCM_TE_CORRECTION` | — | — | — | MET_SRC=jcm_online: the AL7h T_e correction file (default the jcm-strat slot's tracked docs/outputs/25_al7_half/corrections/AL7h.nc; the template's own path names a removed jcm-strat worktree) |
+| `--jcm-work` | `JCM_WORK` | — | — | — | MET_SRC=jcm_online: where the live JCM writes its year-end checkpoints (default jcm_online/ in the run directory; a RESUME restarts from them) |
+| `--met-q` | `MET_Q` | — | — | — | MET_SRC=jcm\|jcm_online: water vapour from the BC source (bc, default: the regridded CESM climatology -- jcm-strat is dry and its q is a passive constant) or from JCM (met) |
+| `--met-dir` | `MET_DIR` | — | — | — | MET_SRC=file: directory holding u/v/omega/T.npy + meta.json |
+| `--met-rh` | `MET_RH` | — | — | — | RH seen by settling, the microphysics' water uptake (full chain) and the FRAME3D wet diagnostics, recomputed every step from Q, T and p: liq (default) = over liquid water, Tabazadeh 1997 eq. 1. The radiation's wet optics ignore MET_RH and always compute liquid RH from Q themselves; q = over ice (the old MET_SRC=file default; 1.6-1.9x liq in the band); cesm = the archive's RELHUM as is |
+| `--bc-src` | `BC_SRC` | — | `clim` | `clim` | where every non-wind boundary field comes from (set by the preset): clim = the monthly climatology in CLIM_FILE (scripts/met/make_bc_climatology.py); cesm (module default) = the hourly archive |
+| `--clim-file` | `CLIM_FILE` | — | `inputs/bc_clim/bc_clim.npz` / `inputs/bc_clim/bc_clim_jcm.npz` | `inputs/bc_clim/bc_clim_jcm.npz` | BC_SRC=clim: the climatology, on the MODEL grid (set by the preset; the jcm_numerical preset uses the CESM climatology regridded onto the JCM grid by scripts/met/regrid_clim_to_grid.py) |
 
 ### radiation gases, chunking, engine and reference cache (docs/RADIATION.md)
 
@@ -346,6 +364,7 @@ has one) stands. The **preset** column shows the value both presets set, or
 | `--cesm-suf` | `CESM_SUF` | — | — | date-range suffix of the h1 files |
 | `--tomas-jax-path` | `TOMAS_JAX_PATH` | — | — | tomas-jax checkout (default models/tomas-jax) |
 | `--rrtmgp-path` | `RRTMGP_PATH` | — | — | jax-rrtmgp checkout (default models/jax-rrtmgp) |
+| `--jcm-strat-path` | `JCM_STRAT_PATH` | — | — (`jcm_online_numerical`: its `jcm-strat` slot) | jcm-strat checkout, recursively initialised (jcm_strat + external/jax-gcm's jcm), that the MET_SRC=jcm_online server imports (default models/jcm-strat) |
 
 ### debug dumps
 
