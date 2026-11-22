@@ -939,6 +939,12 @@ else:
 # INIT_BIN=dgnum explicitly there (it is already out of distribution, so this
 # is not the binding problem).
 _INIT_BIN = os.environ.get('INIT_BIN', 'so4').lower()
+# MAM4_BIN_DEVICE=1 (opt-in perf switch, default 0 = the numpy path): bin_mode's
+# (41, cells) erf part runs on the device as separate eager jax ops -- the same
+# operations in the same order, so it should give the same bits -- instead of a
+# numpy array sent to the GPU for erf alone and back (2 x ~430 MB round trip at
+# full grid). Used every step by the open-BC slabs and the polar refresh.
+MAM4_BIN_DEVICE = os.environ.get('MAM4_BIN_DEVICE', '0') != '0'
 N_HOURS   = int(os.environ.get('N_HOURS', 24 * N_DAYS))   # override for smoke tests
 
 # Aerosol IC / boundary-fill source: 'mam4' (default) bins CESM MAM4 modes onto
@@ -1030,12 +1036,20 @@ def bin_mode(num_m, so4_m, sigma_g):
     lnxk = np.log(XK_NP)                                           # (41,)
     # arg[k, g] = (ln xk[k] - lnmg[g]) / s
     #z = (x-mu)/sigma in log space
-    arg = (lnxk[:, None] - lnmg[None, :]) / s                      # (41, G)
-    phi = _phi(arg)                                               # (41, G)
-    #fraction of log-normal distribution that falls in each bin
-    frac = phi[1:, :] - phi[:-1, :]                              # (40, G)
-    #fraction of the mode's number mixing ratio that falls in each bin
-    out = frac * num_m[None, :]                                   # number m.r. per bin
+    if MAM4_BIN_DEVICE:
+        # same ops/order as the numpy branch below, each one eager jax op (no jit
+        # fusion: fusing changes the last bit), without the host round trip
+        arg = (jnp.asarray(lnxk)[:, None] - jnp.asarray(lnmg)[None, :]) / s   # (41, G)
+        phi = 0.5 * (1.0 + jax.scipy.special.erf(arg / np.sqrt(2.0)))          # (41, G), = _phi(arg)
+        frac = phi[1:, :] - phi[:-1, :]                                       # (40, G)
+        out = np.array(frac * jnp.asarray(num_m)[None, :])                     # number m.r. per bin
+    else:
+        arg = (lnxk[:, None] - lnmg[None, :]) / s                      # (41, G)
+        phi = _phi(arg)                                               # (41, G)
+        #fraction of log-normal distribution that falls in each bin
+        frac = phi[1:, :] - phi[:-1, :]                              # (40, G)
+        #fraction of the mode's number mixing ratio that falls in each bin
+        out = frac * num_m[None, :]                                   # number m.r. per bin
     #zero out all bins for any grid cell that had zero number or mass (so the binning is consistent)
     out[:, ~valid] = 0.0
     return out
@@ -2043,6 +2057,10 @@ def main():
             return n, m
     elif AER_SRC == 'mam4':
         print("=== initializing size bins from MAM4 ===", flush=True)
+        if _INIT_BIN != 'dgnum':
+            print(f"  MAM4_BIN_DEVICE={int(MAM4_BIN_DEVICE)}: bin_mode erf part "
+                  f"{'on the device (eager jax ops)' if MAM4_BIN_DEVICE else 'in numpy (erf round trip to the device)'}",
+                  flush=True)
         def aer_fill(t, levs, lat_idx=None):
             return bin_mam4(ds_mam, t, levs, lat_idx)
     else:

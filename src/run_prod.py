@@ -122,6 +122,7 @@ KNOBS = [
  # ---- aerosol source / initial condition ----
  ("aer", "--aer-src",      "AER_SRC",      None,   "mam4|carma", "IC/BC reservoir source (default mam4)"),
  ("aer", "--init-bin",     "INIT_BIN",     None,  "so4|dgnum", "how MAM4 modes are binned onto TOMAS"),
+ ("aer", "--mam4-bin-device", "MAM4_BIN_DEVICE", None, "0|1", "perf: run bin_mode's erf part (INIT_BIN=so4) on the device as eager jax ops, no host round trip (default 0 = numpy)"),
  ("aer", "--init-sigma",   "INIT_SIGMA",   None,   "S",   "override the log-normal mode width used for binning"),
  ("aer", "--carma-file",   "CARMA_FILE",   None,   "PATH", "CARMA reservoir file (AER_SRC=carma)"),
  ("aer", "--carma-frame",  "CARMA_FRAME",  None,   "N",   "time index into the CARMA file"),
