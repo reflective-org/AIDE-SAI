@@ -77,6 +77,16 @@ Env knobs (read once at import, like every other module here):
                  2026-10-14; see _strang_substep) or the first-order H-V
   ADV_SL_RHO     0 | 1  lie only: carry the air mass through the horizontal
                  step (strang always does; see below)
+  ADV_SL_FIXLOG  0 | 1  record what the mass fixers had to correct (default 0;
+                 diagnostic only, results are unchanged). Each sub-step logs
+                 the per-(tracer, level) error the horizontal fixer removes,
+                 M1/M0 - 1, and the column fixer's target/M2 - 1, plus the
+                 split of the level air-mass imbalance into resolved rows and
+                 polar caps; advect_step_batch prints a one-line summary per
+                 call and fixlog_take() returns the raw arrays.
+  ADV_SL_RHONORM 1 | 0  rescale the air mass after the horizontal step so each
+                 level keeps its total, sum(ac rho_out) = sum(ac rho_in)
+                 (default 1, 2026-11-19; see _horizontal_substep)
   ADV_SL_JAC     1 | 0  the air mass after the horizontal step from the
                  Jacobian of the departure map and the bookkeeping remainder
                  returned through the faces (default; see _jacobian and
@@ -137,6 +147,8 @@ ADV_SL_ITER = int(os.environ.get('ADV_SL_ITER', '2'))
 ADV_SL_RHO = os.environ.get('ADV_SL_RHO', '0') != '0'
 ADV_SL_SPLIT = os.environ.get('ADV_SL_SPLIT', 'strang').lower()
 ADV_SL_JAC = os.environ.get('ADV_SL_JAC', '1') != '0'
+ADV_SL_FIXLOG = os.environ.get('ADV_SL_FIXLOG', '0') != '0'
+ADV_SL_RHONORM = os.environ.get('ADV_SL_RHONORM', '1') != '0'
 _SPLITS = ('lie', 'strang')
 if ADV_SL_SPLIT not in _SPLITS:
     raise ValueError(f"ADV_SL_SPLIT={ADV_SL_SPLIT!r}; expected one of {_SPLITS}")
@@ -157,6 +169,8 @@ def describe():
     return (f"semi-Lagrangian (sl_lr): K={ADV_SL_K} sub-steps, cubic horizontal gather + "
             f"quasi-monotone limiter, {vert}, {ADV_SL_ITER} departure iterations, "
             f"mass fixer={ADV_SL_FIXER}"
+            + (", level air mass renormalised (ADV_SL_RHONORM=1)" if ADV_SL_RHONORM else ", ADV_SL_RHONORM=0")
+            + (" [fixer log on]" if ADV_SL_FIXLOG else "")
             + ("" if ADV_SL_VERT != 'flux' else
                ", Strang V/2-H-V/2 with the air mass carried (ADV_SL_SPLIT=strang"
                + (", Jacobian air mass ADV_SL_JAC=1)" if ADV_SL_JAC else ", Eulerian air mass ADV_SL_JAC=0)")
@@ -164,6 +178,32 @@ def describe():
                ", Lie H-V with the air mass carried (ADV_SL_SPLIT=lie ADV_SL_RHO=1)"
                if ADV_SL_RHO else
                ", Lie H-V with the air mass frozen at 1 (ADV_SL_SPLIT=lie ADV_SL_RHO=0)"))
+
+
+# ---- fixer log (ADV_SL_FIXLOG; host-side, off by default) ---------------------
+# WHY (2026-11-19): the budget line closes to roundoff BECAUSE the fixers force
+# it, so it cannot tell a near-conservative transport (factor 1 + 1e-9) from one
+# whose 1e-3 error the fixer smears over a whole level every sub-step. A
+# uniform q = 1 on real CESM winds drifts by ~1e-3 in 2 days with the fixer and
+# by ~1e-6 without it, so the fixer factors are the number to watch.
+_FIXLOG = {'level': [], 'column': [], 'air_res': [], 'air_cap': []}
+
+
+def _fixlog(kind, x):
+    if ADV_SL_FIXLOG:
+        jax.debug.callback(lambda a: _FIXLOG[kind].append(np.asarray(a, np.float64)), x)
+
+
+def fixlog_take():
+    """Return and clear the fixer log: dict of arrays, one row per sub-step:
+    'level' (n, ntr, nlev) M1/M0 - 1 before the horizontal fixer; 'column'
+    (n, ntr) target/M2 - 1 of the column fixer (empty without one); 'air_res'
+    / 'air_cap' (n, nlev) the level air-mass change across the horizontal step,
+    sum(ac (rho_out - rho_in)) / sum(ac rho_in), from resolved rows / caps."""
+    out = {k: (np.stack(v) if v else np.zeros((0,))) for k, v in _FIXLOG.items()}
+    for v in _FIXLOG.values():
+        v.clear()
+    return out
 
 
 # ---- mass fixers (sums in float64) -------------------------------------------
@@ -229,7 +269,7 @@ def _jacobian(lon_dep, sin_lat_dep, grid, cap):
 
 
 def _horizontal_substep(q, u, v, grid, dt, ac2, order, limiter, iterations, fixer, gdtype,
-                        rho_in=None, rho_out=None, jac=False, cap=None):
+                        rho_in=None, rho_out=None, jac=False, cap=None, rhonorm=None):
     """SL remap of q (ntr, nlev, nlon, nlat) along 2-D trajectories, one set
     per level, with the per-(tracer, level) mass fixer. ac2: (1, nlat) f64.
     rho_in / rho_out (nlev, nlon, nlat) f64, optional: the air mass before and
@@ -239,6 +279,7 @@ def _horizontal_substep(q, u, v, grid, dt, ac2, order, limiter, iterations, fixe
     mass after the step is rho_in(departure) * Jacobian instead (_jacobian),
     with the given Eulerian rho_out kept inside the caps. Returns (q_after,
     rho_out as used)."""
+    rhonorm = ADV_SL_RHONORM if rhonorm is None else rhonorm
     dep = S.horizontal_departure_points(u, v, grid, dt, iterations=iterations)
     lon, sin_lat = S.cartesian_to_lon_sin_lat(dep.cartesian)
     st = S.stencil_2d_levels(grid, lon, sin_lat, order)
@@ -248,7 +289,29 @@ def _horizontal_substep(q, u, v, grid, dt, ac2, order, limiter, iterations, fixe
             stR = S.stencil_2d_levels(grid, lon, sin_lat, 'linear')
             J = J * S.gather_2d_levels(rho_in.astype(gdtype), grid, stR, None).astype(jnp.float64)
         rho_out = jnp.where(incap, rho_out, J)
+    if rhonorm and rho_out is not None:
+        # WHY (2026-11-19): a horizontal step cannot change a level's air mass
+        # (each level is a closed sphere), but the rho_out built above does:
+        # the Eulerian cap rows lose ~1.2e-4 of the 1.24 hPa level per sub-step
+        # and the Jacobian rows gain ~1-2.5e-5 on every level. The per-level
+        # fixer read that as a tracer error and rescaled the whole level every
+        # sub-step: q = 1 drifted +2 % at 1.24 hPa in 10 days of CESM winds
+        # (-1 % on all levels with the caps removed), independent of K, while
+        # fixer=none stayed within 1e-5. Restoring the level total makes the
+        # fixer see only the tracer's own transport error; the local mismatch
+        # left is returned through the column by _remainder_sweep.
+        r_in = 1.0 if rho_in is None else rho_in.astype(jnp.float64)
+        A_in = jnp.sum(ac2[None] * r_in * jnp.ones_like(rho_out, jnp.float64), axis=(1, 2))
+        A_out = jnp.sum(ac2[None] * rho_out.astype(jnp.float64), axis=(1, 2))
+        rho_out = rho_out * (A_in / A_out)[:, None, None]
     M0 = jnp.sum(ac2[None, None] * (q if rho_in is None else rho_in[None] * q), axis=(2, 3))   # (ntr, nlev)
+    if ADV_SL_FIXLOG and rho_out is not None and cap is not None:
+        r_in = jnp.ones_like(rho_out) if rho_in is None else rho_in.astype(jnp.float64)
+        d = ac2[None] * (rho_out.astype(jnp.float64) - r_in)
+        A = jnp.sum(ac2[None] * r_in, axis=(1, 2))
+        incap_ = jnp.broadcast_to(cap[None, None, :], d.shape)
+        _fixlog('air_res', jnp.sum(jnp.where(incap_, 0.0, d), axis=(1, 2)) / A)
+        _fixlog('air_cap', jnp.sum(jnp.where(incap_, d, 0.0), axis=(1, 2)) / A)
     qg = q.astype(gdtype)
     qH = jax.vmap(lambda f: S.gather_2d_levels(f, grid, st, limiter))(qg)
     if fixer == 'local':
@@ -256,6 +319,10 @@ def _horizontal_substep(q, u, v, grid, dt, ac2, order, limiter, iterations, fixe
         qL = jax.vmap(lambda f: S.gather_2d_levels(f, grid, stL, None))(qg)
     else:
         qL = qH
+    if ADV_SL_FIXLOG:
+        wt = ac2[None, None] * (1.0 if rho_out is None else rho_out[None])
+        M1 = jnp.sum(wt * qH.astype(jnp.float64), axis=(2, 3))
+        _fixlog('level', jnp.where(M0 != 0, M1 / jnp.where(M0 != 0, M0, 1.0) - 1.0, 0.0))
     fix = functools.partial(_fix_mass, fixer=fixer)
     if rho_out is None:
         per_level = jax.vmap(lambda a, b, c: fix(a, b, ac2, c))        # over levels
@@ -336,6 +403,7 @@ def _column_fix(q2, M_ref, vfl, m, ac2):
     is carried (ADV_SL_RHO / strang), O(dt div) with rho frozen at 1."""
     target = M_ref + jnp.sum(ac2[None] * (vfl[:, 0] - vfl[:, 1]), axis=(1, 2))
     M2 = jnp.sum(m[None] * q2, axis=(1, 2, 3))
+    _fixlog('column', jnp.where(M2 > 0, target / jnp.where(M2 > 0, M2, 1.0), 1.0) - 1.0)
     return q2 * jnp.where(M2 > 0, target / jnp.where(M2 > 0, M2, 1.0), 1.0)[:, None, None, None]
 
 
@@ -596,6 +664,24 @@ def advect_step_batch(qb0, u0, v0, w0, u1, v1, w1, lat, dp, qfrozb, dt_total,
                           polar_mode=polar_mode,
                           dphi=float(lat_np[1] - lat_np[0]) * DEG, rho_mode=rho_mode,
                           split=split, jac=jac)
+    if ADV_SL_FIXLOG:
+        jax.block_until_ready(out)
+        jax.effects_barrier()
+        L = _FIXLOG
+        lv = np.stack(L['level'][-K:]) if L['level'] else None
+        cl = np.stack(L['column'][-K:]) if L['column'] else None
+        msg = "[sl_lr fixer]"
+        if lv is not None:
+            a = np.abs(lv).max(axis=(0, 1))
+            msg += (f" level |M1/M0-1| max {a.max():.2e} (lev {int(a.argmax())})"
+                    f" mean {np.abs(lv).mean():.2e}")
+        if cl is not None:
+            msg += f" | column max {np.abs(cl).max():.2e}"
+        if L['air_cap']:
+            ac_ = np.stack(L['air_cap'][-K:]); ar_ = np.stack(L['air_res'][-K:])
+            msg += (f" | level air imbalance: caps max {np.abs(ac_).max():.2e},"
+                    f" resolved max {np.abs(ar_).max():.2e}")
+        print(msg, flush=True)
     res = [jnp.swapaxes(out, -1, -2), K]
     if return_vflux:
         res.append(jnp.swapaxes(vfl, -1, -2))

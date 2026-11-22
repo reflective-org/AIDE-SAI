@@ -654,7 +654,13 @@ PHYS_CFG = np.array([float(WET_SETTLING), float(WET_OPTICS), float(SETTLE_ENABLE
                      float(MET_Q == 'met'),
                      # 2026-11-18 (live JCM), appended: JCM run live
                      # (MET_SRC=jcm_online) rather than read from its output.
-                     float(MET_SRC == 'jcm_online')])
+                     float(MET_SRC == 'jcm_online'),
+                     # 2026-11-22, appended: sl_lr renormalises each level's air
+                     # mass after the horizontal step (ADV_SL_RHONORM, default 1;
+                     # 0 reproduces the runs before 2026-11-22). -1 when the
+                     # transport is not sl.
+                     (float(os.environ.get('ADV_SL_RHONORM', '1') != '0')
+                      if ADV_SCHEME == 'sl' else -1.0)])
 PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'MICRO_ENGINE=emulator', 'ADV_SCHEME=sl', 'RAD_ENGINE=emulator',
                           'ADV_SCHEME=ffsl', 'MET_SRC=file', 'BC_SRC=clim', 'ADV_PASSIVE',
@@ -662,7 +668,7 @@ PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'RAD_SOLAR_ALIGN', 'MICRO_ENGINE=full', 'ADV_SCHEME=lr',
                           'MET_RH', 'RAD_T_FEEDBACK', 'MICRO_DT', 'MICRO_NCOAG',
                           'MICRO_COAG=adaptive', 'MICRO_FION', 'MET_SRC=jcm', 'MET_Q=met',
-                          'MET_SRC=jcm_online'])
+                          'MET_SRC=jcm_online', 'ADV_SL_RHONORM'])
 ALPHA_COND = float(os.environ.get('ALPHA_COND', '1.0'))  # H2SO4 accommodation coeff (SAI box-model value)
 # ---- diurnal OH from a solar-zenith-angle curve (Hanisco et al. 2001, Fig. 1) ----
 # DEFAULT ON. The SO2+OH chemistry uses OH(theta) read off the paper's figure

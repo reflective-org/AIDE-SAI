@@ -54,8 +54,8 @@ hard-coded launcher presets that are visible only by diffing branches.
 
 | preset | meteorology | grid | `CLIM_FILE` (relative to the repo root) | reproduces |
 |---|---|---|---|---|
-| `cesm_numerical` (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz` | the 2-year CESM runs `fast_2yr_inj6_30NS` / `fast_2yr_ctrl`, bit-identically |
-| `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically |
+| `cesm_numerical` (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz` | the 2-year CESM runs `fast_2yr_inj6_30NS` / `fast_2yr_ctrl`, bit-identically with `ADV_SL_RHONORM=0` |
+| `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically with `ADV_SL_RHONORM=0` |
 | `jcm_online_numerical` | jcm-strat AL7h **run live**, 6-hourly (`MET_SRC=jcm_online`; code from the `jcm-strat` slot, `models/jcm-strat` f3c2070; started from the same `JCM_DIR` chain) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19) — **statistically, not bitwise**: jcm-strat on GPU is not deterministic run to run (§ Code state) |
 
 All three also set `BC_SRC=clim`, `INIT_BIN=so4` and `ADV_VPOS=1`, and pin the
@@ -694,6 +694,33 @@ any directory. What they take from the cwd is the checkpoint they read
   entirely from the Dirichlet edge-level reset being ~3× the flux-face exchange
   — and is kept only for the record. `docs/PROCESSES.md` §1.8–1.10.
   `PHYS_CFG` stamps `ADV_SCHEME=sl`, `=ffsl` and `=lr` (warn-only).
+
+- **`ADV_SL_RHONORM=1`: sl_lr level air mass (default since 2026-11-22).**
+  After each horizontal sub-step `sl_lr._horizontal_substep` rescales the
+  carried air mass so every level keeps its total, `sum(ac rho_out) =
+  sum(ac rho_in)`. A horizontal step cannot change a level's air mass, but the
+  rho_out it built did: the Eulerian polar-cap rows lose ~1.2e-4 of the 1.24 hPa
+  level per sub-step and the Jacobian rows gain 1–2.5e-5 on every level. The
+  per-level mass fixer read that as a tracer error and rescaled the whole level
+  every sub-step, so a uniform q = 1 on CESM 1996 winds drifted **+2 % at
+  1.24 hPa in 10 days** while the budget still closed (the fixers force the
+  closure, so the budget line cannot see it). With the fixer off the same test
+  stays within 1e-5, so the transport itself is near-conservative; the drift
+  was imprinted by the fixer. It does not shrink with K (K=24 drifts the same)
+  or with the cap reset; removing the caps moves it to −1 % everywhere. With
+  the renormalisation the per-level fixer factor drops from 2.6e-4 to 3.8e-8
+  per sub-step and the uniform field stays within 1e-4 after 10 days
+  (`scripts/validation/sl_fixer_cap_diag.py`, `ADV_SL_FIXLOG=1`). The local
+  mismatch that is left goes back down the column through `_remainder_sweep`.
+  Year-long tracer truth tests (month 12 against CESM's own transported
+  tracers, K=12): N2O RMSE 3.71e-9 → 3.15e-9 and bias −2.1e-9 → −1.3e-10
+  (now better than `lr`); CH4 (monthly truth) RMSE 2.64e-8 → 3.34e-8 and bias
+  +5.8e-9 → +1.7e-8, which is where K=24 lands with or without the switch —
+  probably two compensating errors in the old K=12 CH4 score; open.
+  **What the switch changes:** a bare run is not bit-identical to runs before
+  2026-11-22, including the 2-year CESM and JCM runs (set `ADV_SL_RHONORM=0`
+  to reproduce them). PHYS_CFG stamps it (warn-only; checkpoints written before
+  the stamp existed resume without a warning).
 
 - **`MET_RH=liq`** (2026-11-17): RH is recomputed every step from Q, T_met and
   p, over liquid water (Tabazadeh 1997 eq. 1, `settling.rh_liquid_pct`). It is

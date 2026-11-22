@@ -6,8 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **sl_lr conserves each level's air mass (`ADV_SL_RHONORM=1`, new default).**
+  The per-level mass fixer was imprinting a drift from a level air mass that
+  the polar caps and the Jacobian did not conserve: uniform q drifted +2 % at
+  1.24 hPa in 10 days. Now within 1e-4. Bare runs are no longer bit-identical
+  to the 2-year runs; `ADV_SL_RHONORM=0` reproduces them. MANIFEST.md has the
+  numbers.
+
 ### Added
 
+- `ADV_SL_FIXLOG=1`: logs the level and column mass-fixer corrections per
+  sub-step (diagnostic, results unchanged), and
+  `scripts/validation/sl_fixer_cap_diag.py` / `sl_fixer_cap_summary.py`, the
+  uniform-tracer drift test on CESM winds.
 - **A third linking, `configs/jcm_online_numerical.env`: jcm-strat run live as
   the meteorology** (`MET_SRC=jcm_online`). The same fields and grid as
   `jcm_numerical`, but from the jcm-strat AL7h model integrating beside the
