@@ -54,6 +54,7 @@ for _env, _name in (('TOMAS_JAX_PATH', 'tomas-jax'), ('RRTMGP_PATH', 'jax-rrtmgp
             break
 
 import functools
+import dataclasses
 import hashlib
 import numpy as np
 import jax
@@ -98,7 +99,11 @@ TSI_DEFAULT = 1361.0           # W/m2; per-step irradiance override possible
 # BIT-IDENTICAL (columns independent). Default 96; drop to 48 if radiation OOMs on
 # a memory-tight card (per-band fields are ~3GB/globe, so fewer/bigger chunks cost
 # more memory -- 96=2 chunks ~1.5GB each, 48=4 chunks ~0.75GB each).
-RAD_LAT_CHUNK = int(os.environ.get('RAD_LAT_CHUNK', '96'))
+# RAD_FAST=1 (opt-in perf switch, default 0; see the RAD_FAST block below) makes
+# the default 192 = the whole globe in one chunk: the solve is launch-bound, so
+# every extra chunk costs ~0.45 s; peak device memory 8.4 GB vs 6.6 GB at 96.
+RAD_FAST = os.environ.get('RAD_FAST', '0') != '0'
+RAD_LAT_CHUNK = int(os.environ.get('RAD_LAT_CHUNK', '192' if RAD_FAST else '96'))
 # Size the optics on the WET H2SO4/H2O droplet rather than the dry SO4 core.
 # ON by default as of 2026-08-03; 0 reproduces the legacy dry-diameter optics.
 WET_OPTICS = os.environ.get('WET_OPTICS', '1') != '0'
@@ -654,6 +659,101 @@ def solar_window(time_val, lat_deg, lon_deg, width_h, offset_h=0.0, mu='sunlit',
 
 
 # =========================================================================
+# RAD_FAST: the radiation fast path (opt-in perf switch, default 0 = the chunk
+# loop above, unchanged). Ported by hand from AIDE-SAI-link 9d693d2 (rad agent,
+# 2026-11-13) and ab74f46 (window_gq fast path, 2026-11-17). Under RAD_FAST=1
+# on ONE device with wet optics, heating() runs:
+#   * one LW solve per lat chunk (RAD_LAT_CHUNK defaults to 192 = one chunk),
+#   * the SW solve on the sunlit columns only (compacted, padded to RAD_SW_PAD),
+#     once per Gauss node under RAD_SOLAR=window_gq (RAD_GQ_FAST), combined under
+#     jit exactly as _hr_multi_impl does,
+#   * g-points vmap'ed RAD_GBATCH at a time (rrtmgp_batched.py; same per-element
+#     ops, summed in g order),
+#   * the minor-gas scan over each band's own intervals only (RAD_DYN_MINOR) and
+#     the lower/upper minor tables on their own levels only (RAD_SPLIT_TROPO;
+#     needs level-only, monotone column pressure -- asserted at trace time),
+#   * no cloud optics (RAD_SKIP_CLOUD; clear sky, zero-cloud combine kept for SW).
+# The sub-knobs default to 1 under RAD_FAST=1 and are inert under RAD_FAST=0.
+# Multi-GPU and dry optics keep the chunk loop.
+# =========================================================================
+def _fast_knob(name, default='1'):
+    return RAD_FAST and os.environ.get(name, default) != '0'
+
+
+RAD_GBATCH = int(os.environ.get('RAD_GBATCH', '4')) if RAD_FAST else 1   # g-points per loop iteration
+RAD_DYN_MINOR = _fast_knob('RAD_DYN_MINOR')
+RAD_SPLIT_TROPO = _fast_knob('RAD_SPLIT_TROPO')
+RAD_SW_PAD = int(os.environ.get('RAD_SW_PAD', '4096'))
+RAD_SW_MAXCOLS = int(os.environ.get('RAD_SW_MAXCOLS', '1000000'))
+RAD_SW_SKIP_NIGHT = _fast_knob('RAD_SW_SKIP_NIGHT')
+RAD_SKIP_CLOUD = _fast_knob('RAD_SKIP_CLOUD')
+RAD_GQ_FAST = _fast_knob('RAD_GQ_FAST')     # window_gq through the fast path; 0 = the chunk loop
+if RAD_FAST:
+    import rrtmgp_batched                    # src/radiation/, via _paths
+    if RAD_DYN_MINOR:
+        rrtmgp_batched.install_dynamic_minor_scan(split_tropo=RAD_SPLIT_TROPO)
+
+
+def rad_fast_summary():
+    """One line for the run header."""
+    if not RAD_FAST:
+        return "RAD_FAST=0 (radiation chunk loop, library g-point loop)"
+    return (f"RAD_FAST=1 (RAD_LAT_CHUNK={RAD_LAT_CHUNK} RAD_GBATCH={RAD_GBATCH} "
+            f"RAD_DYN_MINOR={int(RAD_DYN_MINOR)} RAD_SPLIT_TROPO={int(RAD_SPLIT_TROPO)} "
+            f"RAD_SKIP_CLOUD={int(RAD_SKIP_CLOUD)} RAD_SW_SKIP_NIGHT={int(RAD_SW_SKIP_NIGHT)} "
+            f"RAD_GQ_FAST={int(RAD_GQ_FAST)} RAD_SW_PAD={RAD_SW_PAD})")
+
+
+def _no_mark(name, *arrs):
+    """Stage-timing hook of the fast path (the rad agent's RAD_PROF); a no-op here."""
+    return None
+
+
+def c_shape(a, ncol):
+    return (a.shape[0], a.shape[1], ncol)
+
+
+def _skip_clouds(rt):
+    """RAD_SKIP_CLOUD: this driver is clear-sky -- cloud paths are exactly zero -- but
+    jax-rrtmgp is handed zero-valued cloud arrays (not None), so for every one of the 128 LW + 112 SW
+    g-points it runs the cloud-optics table lookups and mass-weighted combine of an all-zero cloud.
+    Instance-level override (the submodule is untouched) of the two optical-property methods that
+    drops the cloud branch but keeps the arithmetic bit-identical:
+      LW: gas props have ssa=g=0, so combining with a zero-tau cloud returns exactly (tau, 0, 0);
+      SW: the combine is still applied with an all-zero cloud, because (tau*ssa)/tau is not
+          bitwise ssa -- skipping it would change the last bit of ssa."""
+    if not RAD_SKIP_CLOUD:
+        return
+    lib = rt.optics_lib
+    lw0, sw0 = lib.compute_lw_optical_properties, lib.compute_sw_optical_properties
+
+    def lw(pressure, temperature, molecules, igpt, vmr_fields=None, cloud_r_eff_liq=None,
+           cloud_path_liq=None, cloud_r_eff_ice=None, cloud_path_ice=None):
+        return lw0(pressure, temperature, molecules, igpt, vmr_fields)
+
+    def sw(pressure, temperature, molecules, igpt, vmr_fields=None, cloud_r_eff_liq=None,
+           cloud_path_liq=None, cloud_r_eff_ice=None, cloud_path_ice=None):
+        gas = sw0(pressure, temperature, molecules, igpt, vmr_fields)
+        z = jnp.zeros_like(gas['ssa'])
+        return lib.combine_optical_properties(
+            gas, {'optical_depth': z, 'ssa': z, 'asymmetry_factor': z})
+
+    lib.compute_lw_optical_properties, lib.compute_sw_optical_properties = lw, sw
+
+
+@jax.jit
+def _gq_combine(hr_lw, olr, lwd, parts):
+    """window_gq fast path: _hr_multi_impl's accumulation, (0.0 + s_0 + ...) / N, under jit
+    (done eagerly it differs by 1 ulp and the sign of zero: XLA folds the 0.0 + and fuses the / N)."""
+    n = len(parts)
+    h = dn = up = ds = 0.0
+    for p in parts:
+        h = h + p[0]; dn = dn + p[1]; up = up + p[2]; ds = ds + p[3]
+    h, dn, up, ds = h / n, dn / n, up / n, ds / n
+    return hr_lw + h, jnp.stack([dn, up, olr, ds, lwd]), h
+
+
+# =========================================================================
 # Radiation driver
 # =========================================================================
 class RadiationDriver:
@@ -754,6 +854,7 @@ class RadiationDriver:
             ))
         # dz only feeds cloud paths; we are clear-sky, so any scalar works (for LWP/IWP calcs).
         self.rt = rrtmgp_lib.RRTMGP(cfg, dz=500.0)
+        _skip_clouds(self.rt)                  # RAD_FAST only (no-op otherwise)
         self.cfg = cfg
         self.g_lw, self.g_sw = g_lw, g_sw
         # A second RRTMGP instance that ALSO returns the SW/LW split of the
@@ -807,6 +908,12 @@ class RadiationDriver:
                   "underestimates extinction ~47%; set WET_OPTICS=1)", flush=True)
 
         self._jit_hr = jax.jit(self._hr_impl)
+        if RAD_FAST:
+            # (nz+2,) column pressures, for RAD_SPLIT_TROPO's static lower/upper split
+            self._pcol = np.asarray(self._p_xyz(1, 1))[0, 0] if RAD_DYN_MINOR else None
+            self._jit_lw = jax.jit(self._lw_impl)
+            self._jit_sw = jax.jit(self._sw_impl)
+        print("  " + rad_fast_summary(), flush=True)
         # window_gq: one LW + N SW solves per chunk (see _hr_multi_impl); split=True
         # for the label writer / reference-cache builder
         self._jit_hr_multi = jax.jit(self._hr_multi_impl, static_argnames=('split',))
@@ -943,8 +1050,8 @@ class RadiationDriver:
 
     def _band_to_xyz(self, prop):
         """(nb, nzb, nx, nlon) band-level aerosol -> (nb, nx, nlon, nz+2)."""
-        nb, _, nx, _ = prop.shape
-        full = jnp.zeros((nb, self.nzc, nx, self.nlon), prop.dtype)
+        nb, _, nx, nlon_ = prop.shape             # nlon_ = 1 for RAD_FAST's compacted SW columns
+        full = jnp.zeros((nb, self.nzc, nx, nlon_), prop.dtype)
         full = full.at[:, self.band_pos].set(prop)
         full = jnp.moveaxis(full, 1, -1)[..., ::-1]
         #instead of linear extrapolation, we just pad with zeros for the halo layers
@@ -989,6 +1096,52 @@ class RadiationDriver:
         if split:
             return hr, diags, out['rad_heat_sw_3d']
         return hr, diags
+
+    # ---- RAD_FAST: split LW / SW path (AIDE-SAI-link 9d693d2) ----------------------------
+    # Same arithmetic as RRTMGP.compute_heating_rate (clear sky, no clouds), written out so the
+    # SW solve can run on the sunlit columns only: night columns are zeroed by solve_sw anyway
+    # (see its horizon handling) but still cost the full 112-g-point solve. Columns are independent,
+    # so solving a compacted (n,1,nz) subset gives the same per-column bits.
+    def _front(self, T, q, o3, ch4, p):
+        from rrtmgp.optics import lookup_volume_mixing_ratio
+        rt = self.rt
+        zero = jnp.zeros_like(T)
+        co2 = jnp.full_like(T, CO2_PPM * 1e-6)
+        n2o = jnp.full_like(T, N2O_PPB * 1e-9)
+        Tf = T.at[:, :, 0].set(2 * T[:, :, 1] - T[:, :, 2])
+        Tf = Tf.at[:, :, -1].set(2 * T[:, :, -2] - T[:, :, -3])
+        q_t = jnp.clip(q, 0.0, None)
+        vmr = lookup_volume_mixing_ratio.reconstruct_vmr_fields_from_pressure(rt.atmospheric_state.vmr, p)
+        vmr.update({'o3': o3, 'ch4': ch4, 'co2': co2, 'n2o': n2o})
+        vmr['h2o'] = rrtmgp_lib._humidity_to_volume_mixing_ratio(q_t, zero)
+        mol = rrtmgp_lib._air_molecules_per_area(p, vmr['h2o'])
+        return Tf, vmr, mol
+
+    def _lw_impl(self, T, q, o3, ch4, ts, aer_lw, p):
+        from rrtmgp.rte import two_stream
+        rt = self.rt
+        Tf, vmr, mol = self._front(T, q, o3, ch4, p)
+        state = dataclasses.replace(rt.atmospheric_state, sfc_emis=SFC_EMIS)
+        aer = {'optical_depth': aer_lw[0], 'ssa': aer_lw[1], 'asymmetry_factor': aer_lw[2]}
+        if RAD_GBATCH > 1:
+            lw = rrtmgp_batched.solve_lw(p, Tf, mol, rt.optics_lib, state, vmr, ts, aer, RAD_GBATCH, RAD_DYN_MINOR, self._pcol)
+        else:
+            lw = two_stream.solve_lw(p, Tf, mol, rt.optics_lib, state, vmr, ts, aerosol_optics=aer)
+        hr = two_stream.compute_heating_rate(lw['flux_net'], p)
+        return hr, lw['flux_up'][..., -1], lw['flux_down'][..., 1]
+
+    def _sw_impl(self, T, q, o3, ch4, alb, zen, aer_sw, p, irr):
+        from rrtmgp.rte import two_stream
+        rt = self.rt
+        Tf, vmr, mol = self._front(T, q, o3, ch4, p)
+        state = dataclasses.replace(rt.atmospheric_state, zenith=zen, irrad=irr, sfc_alb=alb, sfc_emis=SFC_EMIS)
+        aer = {'optical_depth': aer_sw[0], 'ssa': aer_sw[1], 'asymmetry_factor': aer_sw[2]}
+        if RAD_GBATCH > 1:
+            sw = rrtmgp_batched.solve_sw(p, Tf, mol, rt.optics_lib, state, vmr, aer, RAD_GBATCH, RAD_DYN_MINOR, self._pcol)
+        else:
+            sw = two_stream.solve_sw(p, Tf, mol, rt.optics_lib, state, vmr, aerosol_optics=aer)
+        hr = two_stream.compute_heating_rate(sw['flux_net'], p)
+        return hr, sw['flux_down'][..., -1], sw['flux_up'][..., -1], sw['flux_down'][..., 1]
 
     def _hr_multi_impl(self, T, q, o3, ch4, ts, albs, zens, aer_sw, aer_lw, irrs, split=False):
         """RAD_SOLAR=window_gq on one chunk: ONE longwave solve and len(zens)
@@ -1077,12 +1230,110 @@ class RadiationDriver:
         # keep halo pressures inside the gas-optics lookup range
         return jnp.clip(px, 1.006, 1.09e5)
 
+    def _p_xyz(self, nx, ny):
+        p = np.broadcast_to(self.p_lay[:, None, None], (self.nzc, nx, ny))
+        return jnp.clip(self._to_xyz(p), 1.006, 1.09e5)
+
+    _SW_SIZES = (16384, 8192, 4096, 2048, 1024)
+
+    def _solve_fast(self, Tx, qx, o3x, ch4x, tsj, albj, zen, irrj, num_j, wwt_all, _mk):
+        """One-solve (instant/window) path: LW per lat chunk exactly as before, SW on the sunlit
+        columns only (see _sw_impl). Returns (hr (nlat,nlon,nz+2), diags (5,nlat,nlon), aod550, hr_sw)."""
+        hr_lw, olr, lwd, aod550, ctx = self._fast_lw(Tx, qx, o3x, ch4x, tsj, num_j, wwt_all, _mk)
+        hsw, dn_t, up_t, dn_s = self._fast_sw(ctx, albj, zen, irrj, _mk)
+        diags = jnp.stack([dn_t, up_t, olr, dn_s, lwd])
+        hr = hr_lw + hsw
+        return hr, diags, aod550, hsw
+
+    def _solve_fast_gq(self, Tx, qx, o3x, ch4x, tsj, albs, zens, irrs, num_j, wwt_all, _mk):
+        """RAD_SOLAR=window_gq on the fast path (2026-11-17, rgq): ONE LW solve and, per Gauss node,
+        one SW solve on that node's sunlit columns only. Accumulates exactly as _hr_multi_impl:
+        (0.0 + s_0 + ... + s_{N-1}) / N for the SW heating and fluxes, then hr_lw + hr_sw.
+        albs/zens/irrs carry a leading node axis."""
+        hr_lw, olr, lwd, aod550, ctx = self._fast_lw(Tx, qx, o3x, ch4x, tsj, num_j, wwt_all, _mk)
+        parts = [self._fast_sw(ctx, albs[k], zens[k], irrs[k], _mk) for k in range(zens.shape[0])]
+        # combine under jit, as _hr_multi_impl does (XLA folds the leading 0.0 + and fuses the / n;
+        # done eagerly the result differs by 1 ulp and the sign of zero)
+        hr, diags, hsw = _gq_combine(hr_lw, olr, lwd, parts)
+        return hr, diags, aod550, hsw
+
+    def _fast_lw(self, Tx, qx, o3x, ch4x, tsj, num_j, wwt_all, _mk):
+        """Aerosol optics + LW per lat chunk; returns (hr_lw, olr, lwd, aod550, ctx for _fast_sw)."""
+        nlat, nlon = self.nlat, self.nlon
+        ncol = nlat * nlon
+        C = RAD_LAT_CHUNK
+        nchunk = int(np.ceil(nlat / C)); C = int(np.ceil(nlat / nchunk))
+        dp_d, mie_sw, mie_lw, sig = (self._dp_band_dev[0], self._mie_sw_dev[0], self._mie_lw_dev[0],
+                                     self._sig550_dev[0])
+        lw_hr, olr, lwd, aod_rows, sw_raw = [], [], [], [], []
+        for a in range(0, nlat, C):
+            b = min(a + C, nlat)
+            nc = num_j[:, :, a:b]; ww = wwt_all[:, :, a:b]
+            tau_s, ssa_s, g_s = _aerosol_props_wet(nc, dp_d, mie_sw['sigma_ext'], mie_sw['ssa'], mie_sw['g'], ww)
+            tau_l, ssa_l, g_l = _aerosol_props_wet(nc, dp_d, mie_lw['sigma_ext'], mie_lw['ssa'], mie_lw['g'], ww)
+            aer_lw = tuple(self._band_to_xyz(v) for v in (tau_l, ssa_l, g_l))
+            _mk('optics', *aer_lw, tau_s, ssa_s, g_s)
+            h, o, d = self._jit_lw(Tx[a:b], qx[a:b], o3x[a:b], ch4x[a:b], tsj[a:b], aer_lw,
+                                   self._p_xyz_chunk(b - a))
+            _mk('lw_solve', h, o, d)
+            lw_hr.append(h); olr.append(o); lwd.append(d)
+            sw_raw.append((tau_s, ssa_s, g_s))
+            aod_rows.append(_aod550_wet(nc, dp_d, sig, ww))
+            _mk('aod', aod_rows[-1])
+        cat = lambda xs, ax=0: xs[0] if len(xs) == 1 else jnp.concatenate(xs, axis=ax)
+        hr_lw = cat(lw_hr); olr = cat(olr); lwd = cat(lwd); aod550 = cat(aod_rows)
+        sw_props = tuple(cat([c[i] for c in sw_raw], 2).reshape(c_shape(sw_raw[0][i], ncol))
+                         for i in range(3))
+        nz2 = self.nzc + 2
+        flat = tuple(x.reshape(ncol, nz2) for x in (Tx, qx, o3x, ch4x))
+        return hr_lw, olr, lwd, aod550, (sw_props, flat, Tx.dtype)
+
+    def _fast_sw(self, ctx, albj, zen, irrj, _mk):
+        """SW on the sunlit columns of one geometry. Returns (hsw (nlat,nlon,nz+2), sw_dn_toa,
+        sw_up_toa, sw_dn_sfc), each (nlat, nlon); night columns get the solver's own zeros."""
+        sw_props, (Tf_, qf_, o3f_, ch4f_), dt = ctx
+        nlat, nlon = self.nlat, self.nlon
+        ncol = nlat * nlon
+        # sunlit columns: the solver's own test is zenith >= pi/2 -> zeroed
+        day = ~(np.asarray(zen).reshape(-1) >= 0.5 * np.pi)
+        idx = np.flatnonzero(day); nd = idx.size
+        nz2 = self.nzc + 2
+        # night: solve_sw's zeroed flux -> heating rate is -0.0 (G*0/dp/cp, dp<0); keep the sign bit
+        hsw = jnp.full((ncol, nz2), -0.0); dn_t = jnp.zeros(ncol); up_t = jnp.zeros(ncol); dn_s = jnp.zeros(ncol)
+        hsw = hsw.astype(dt); dn_t = dn_t.astype(dt); up_t = up_t.astype(dt); dn_s = dn_s.astype(dt)
+        pos = 0
+        alb_f = albj.reshape(ncol); zen_f = jnp.asarray(zen).reshape(ncol)
+        irr_f = None if irrj is None else irrj.reshape(ncol)
+        while pos < nd:
+            # ONE solve over all sunlit columns, padded to a multiple of RAD_SW_PAD (a handful of
+            # distinct shapes over a year -> a handful of one-off compiles); each extra call costs
+            # ~0.1 s of pure launch overhead, so no chunking
+            nreal = min(nd - pos, RAD_SW_MAXCOLS)
+            n = -(-nreal // RAD_SW_PAD) * RAD_SW_PAD
+            ic = idx[pos:pos + nreal]
+            if nreal < n:
+                ic = np.concatenate([ic, np.full(n - nreal, idx[0], ic.dtype)])
+            ji = jnp.asarray(ic)
+            g = lambda f: f[ji][:, None, :]
+            aer = tuple(self._band_to_xyz(p_[:, :, ji][..., None]) for p_ in sw_props)
+            irr = TSI_DEFAULT if irr_f is None else irr_f[ji][:, None]
+            h, dt_, ut_, ds_ = self._jit_sw(g(Tf_), g(qf_), g(o3f_), g(ch4f_), alb_f[ji][:, None],
+                                            zen_f[ji][:, None, None], aer, self._p_xyz(n, 1), irr)
+            _mk('sw_solve', h, dt_, ut_, ds_)
+            ri = jnp.asarray(idx[pos:pos + nreal])
+            hsw = hsw.at[ri].set(h[:nreal, 0]); dn_t = dn_t.at[ri].set(dt_[:nreal, 0])
+            up_t = up_t.at[ri].set(ut_[:nreal, 0]); dn_s = dn_s.at[ri].set(ds_[:nreal, 0])
+            pos += nreal
+        return (hsw.reshape(nlat, nlon, nz2), dn_t.reshape(nlat, nlon), up_t.reshape(nlat, nlon),
+                dn_s.reshape(nlat, nlon))
+
     # ------------------------------------------------------------------
     def _ensure_split(self):
         if self._rt_split is None:
             import dataclasses
             cfg = dataclasses.replace(self.cfg, save_lw_sw_heating_rates=True)
             self._rt_split = rrtmgp_lib.RRTMGP(cfg, dz=500.0)
+            _skip_clouds(self._rt_split)           # RAD_FAST only (no-op otherwise)
             self._jit_hr_split = jax.jit(functools.partial(self._hr_impl, split=True))
 
     def heating(self, t, num_band, T_band_override=None, split=False, T_optics_band=None):
@@ -1171,69 +1422,81 @@ class RadiationDriver:
         if self.wet_optics:
             T_opt = T[self.band_pos] if T_optics_band is None else np.asarray(T_optics_band, np.float64)
             wwt_all = wt_weights(self._wt_field(T_opt, q[self.band_pos]))
-        # MULTI-GPU: keep each chunk <= RAD_LAT_CHUNK rows (memory bound) but make
-        # the chunk count a multiple of ndev and send chunk i to device i%ndev, so
-        # the chunks run concurrently across GPUs. Columns are independent in
-        # rrtmgp, so the result is bit-identical to the serial single-GPU loop.
-        nchunk = self.ndev * int(np.ceil(self.nlat / (self.ndev * C)))
-        C = int(np.ceil(self.nlat / nchunk))
-        for i, a in enumerate(range(0, self.nlat, C)):
-            b = min(a + C, self.nlat)
-            k = i % self.ndev                       # target device for this chunk
-            put = lambda x: jax.device_put(x, self.devices[k])
-            dp_d = self._dp_band_dev[k]
-            nc = put(num_j[:, :, a:b])
-            #compuets aerosol optical properties (tau, ssa, g) for both SW and LW bands
-            #using the precomputed Mie tables and the number mixing ratios for each bin
-            if self.wet_optics:
-                ww = put(wwt_all[:, :, a:b])
-                tau_s, ssa_s, g_s = _aerosol_props_wet(
-                    nc, dp_d, self._mie_sw_dev[k]['sigma_ext'],
-                    self._mie_sw_dev[k]['ssa'], self._mie_sw_dev[k]['g'], ww)
-                tau_l, ssa_l, g_l = _aerosol_props_wet(
-                    nc, dp_d, self._mie_lw_dev[k]['sigma_ext'],
-                    self._mie_lw_dev[k]['ssa'], self._mie_lw_dev[k]['g'], ww)
-            else:
-                tau_s, ssa_s, g_s = _aerosol_props(nc, dp_d,
-                                               self._mie_sw_dev[k]['sigma_ext'],
-                                               self._mie_sw_dev[k]['ssa'], self._mie_sw_dev[k]['g'])
-                tau_l, ssa_l, g_l = _aerosol_props(nc, dp_d,
-                                               self._mie_lw_dev[k]['sigma_ext'],
-                                               self._mie_lw_dev[k]['ssa'], self._mie_lw_dev[k]['g'])
-            #converts the aerosol optical properties to bottom-up xyz coordinates with zero halos
-            aer_sw = tuple(self._band_to_xyz(v) for v in (tau_s, ssa_s, g_s))
-            aer_lw = tuple(self._band_to_xyz(v) for v in (tau_l, ssa_l, g_l))
-            if geoms is not None:                   # window_gq: (N, rows, ...) geometry
-                _m = self._jit_hr_multi(put(Tx[a:b]), put(qx[a:b]), put(o3x[a:b]), put(ch4x[a:b]),
-                                        put(tsj[a:b]), put(albj[:, a:b]), put(zenj[:, a:b]),
-                                        aer_sw, aer_lw, put(irrj[:, a:b]), split=split)
-                hr, dg = _m[0], _m[1]
-                if split:
-                    sw_rows.append(_m[2])
-            _args = (put(Tx[a:b]), put(qx[a:b]), put(o3x[a:b]), put(ch4x[a:b]),
-                     put(tsj[a:b]), put(albj[a:b]), put(zenj[a:b]), aer_sw, aer_lw)
-            # irr only when RAD_SOLAR=window, so the instant path calls the
-            # jitted function exactly as before the flag existed
-            _kw = {} if irrj is None else {'irr': put(irrj[a:b])}
-            if geoms is not None:
-                pass
-            elif split:
-                hr, dg, hsw = self._jit_hr_split(*_args, **_kw)
-                sw_rows.append(hsw)
-            else:
-                hr, dg = self._jit_hr(*_args, **_kw)
-            #550 nm AOD
-            if self.wet_optics:
-                aod_rows.append(_aod550_wet(nc, dp_d, self._sig550_dev[k], ww))
-            else:
-                aod_rows.append(_aod550(nc, dp_d, self._sig550_dev[k]))
-            hr_rows.append(hr); dg_rows.append(dg)
-        # gather every chunk back to the primary device before concatenating
-        # (no-op when ndev==1, so single-GPU behaviour is unchanged)
-        d0 = self.devices[0]
-        hr = jnp.concatenate([jax.device_put(x, d0) for x in hr_rows], axis=0)     # (nlat,nlon,nz)
-        diags = jnp.concatenate([jax.device_put(x, d0) for x in dg_rows], axis=1)  # (5,nlat,nlon)
-        aod550 = jnp.concatenate([jax.device_put(x, d0) for x in aod_rows], axis=0)# (nlat,nlon)
+        fast = (RAD_FAST and RAD_SW_SKIP_NIGHT and RAD_SKIP_CLOUD and self.ndev == 1
+                and self.wet_optics and (geoms is None or RAD_GQ_FAST))
+        _mk = _no_mark
+        if fast and geoms is not None:
+            hr, diags, aod550, hsw_full = self._solve_fast_gq(
+                Tx, qx, o3x, ch4x, tsj, albj, zen, irrj, num_j, wwt_all, _mk)
+            sw_rows = [hsw_full]; d0 = self.devices[0]
+        elif fast:
+            hr, diags, aod550, hsw_full = self._solve_fast(
+                Tx, qx, o3x, ch4x, tsj, albj, zen, irrj, num_j, wwt_all, _mk)
+            sw_rows = [hsw_full]; d0 = self.devices[0]
+        else:
+            # MULTI-GPU: keep each chunk <= RAD_LAT_CHUNK rows (memory bound) but make
+            # the chunk count a multiple of ndev and send chunk i to device i%ndev, so
+            # the chunks run concurrently across GPUs. Columns are independent in
+            # rrtmgp, so the result is bit-identical to the serial single-GPU loop.
+            nchunk = self.ndev * int(np.ceil(self.nlat / (self.ndev * C)))
+            C = int(np.ceil(self.nlat / nchunk))
+            for i, a in enumerate(range(0, self.nlat, C)):
+                b = min(a + C, self.nlat)
+                k = i % self.ndev                       # target device for this chunk
+                put = lambda x: jax.device_put(x, self.devices[k])
+                dp_d = self._dp_band_dev[k]
+                nc = put(num_j[:, :, a:b])
+                #compuets aerosol optical properties (tau, ssa, g) for both SW and LW bands
+                #using the precomputed Mie tables and the number mixing ratios for each bin
+                if self.wet_optics:
+                    ww = put(wwt_all[:, :, a:b])
+                    tau_s, ssa_s, g_s = _aerosol_props_wet(
+                        nc, dp_d, self._mie_sw_dev[k]['sigma_ext'],
+                        self._mie_sw_dev[k]['ssa'], self._mie_sw_dev[k]['g'], ww)
+                    tau_l, ssa_l, g_l = _aerosol_props_wet(
+                        nc, dp_d, self._mie_lw_dev[k]['sigma_ext'],
+                        self._mie_lw_dev[k]['ssa'], self._mie_lw_dev[k]['g'], ww)
+                else:
+                    tau_s, ssa_s, g_s = _aerosol_props(nc, dp_d,
+                                                   self._mie_sw_dev[k]['sigma_ext'],
+                                                   self._mie_sw_dev[k]['ssa'], self._mie_sw_dev[k]['g'])
+                    tau_l, ssa_l, g_l = _aerosol_props(nc, dp_d,
+                                                   self._mie_lw_dev[k]['sigma_ext'],
+                                                   self._mie_lw_dev[k]['ssa'], self._mie_lw_dev[k]['g'])
+                #converts the aerosol optical properties to bottom-up xyz coordinates with zero halos
+                aer_sw = tuple(self._band_to_xyz(v) for v in (tau_s, ssa_s, g_s))
+                aer_lw = tuple(self._band_to_xyz(v) for v in (tau_l, ssa_l, g_l))
+                if geoms is not None:                   # window_gq: (N, rows, ...) geometry
+                    _m = self._jit_hr_multi(put(Tx[a:b]), put(qx[a:b]), put(o3x[a:b]), put(ch4x[a:b]),
+                                            put(tsj[a:b]), put(albj[:, a:b]), put(zenj[:, a:b]),
+                                            aer_sw, aer_lw, put(irrj[:, a:b]), split=split)
+                    hr, dg = _m[0], _m[1]
+                    if split:
+                        sw_rows.append(_m[2])
+                _args = (put(Tx[a:b]), put(qx[a:b]), put(o3x[a:b]), put(ch4x[a:b]),
+                         put(tsj[a:b]), put(albj[a:b]), put(zenj[a:b]), aer_sw, aer_lw)
+                # irr only when RAD_SOLAR=window, so the instant path calls the
+                # jitted function exactly as before the flag existed
+                _kw = {} if irrj is None else {'irr': put(irrj[a:b])}
+                if geoms is not None:
+                    pass
+                elif split:
+                    hr, dg, hsw = self._jit_hr_split(*_args, **_kw)
+                    sw_rows.append(hsw)
+                else:
+                    hr, dg = self._jit_hr(*_args, **_kw)
+                #550 nm AOD
+                if self.wet_optics:
+                    aod_rows.append(_aod550_wet(nc, dp_d, self._sig550_dev[k], ww))
+                else:
+                    aod_rows.append(_aod550(nc, dp_d, self._sig550_dev[k]))
+                hr_rows.append(hr); dg_rows.append(dg)
+            # gather every chunk back to the primary device before concatenating
+            # (no-op when ndev==1, so single-GPU behaviour is unchanged)
+            d0 = self.devices[0]
+            hr = jnp.concatenate([jax.device_put(x, d0) for x in hr_rows], axis=0)     # (nlat,nlon,nz)
+            diags = jnp.concatenate([jax.device_put(x, d0) for x in dg_rows], axis=1)  # (5,nlat,nlon)
+            aod550 = jnp.concatenate([jax.device_put(x, d0) for x in aod_rows], axis=0)# (nlat,nlon)
 
         # back to CESM order, band levels only (strip halos, flip z)
         hr_cesm = jnp.moveaxis(hr[..., 1:-1][..., ::-1], -1, 0)  # (nzc,nlat,nlon)
