@@ -192,6 +192,7 @@ KNOBS = [
  ("adv", "--adv-sl-rho",   "ADV_SL_RHO",   None,   "0|1", "SL flux vertical, lie split only: carry the air mass 1 - dt div(v) through the horizontal step (strang always does; default 0)"),
  ("adv", "--adv-sl-split", "ADV_SL_SPLIT", None,   "lie|strang", "SL flux vertical: strang (default) = V/2 H V/2 with the air mass carried (second-order face flux); lie = H then V (first order at the open face)"),
  ("adv", "--adv-sl-jac",   "ADV_SL_JAC",   None,   "0|1", "SL flux vertical: 1 (default) = air mass from the Jacobian of the departure map and the bookkeeping remainder returned through the faces; 0 = Eulerian 1 - dt div(v) and the global column fixer"),
+ ("adv", "--adv-sl-device-resample", "ADV_SL_DEVICE_RESAMPLE", None, "0|1", "perf: SL time-resample of the step winds on the device (same float32 formula, bit-identical; engages for float32 winds, prints ENGAGED/not engaged once; default 0 = numpy)"),
  ("adv", "--adv-sl-vorder", "ADV_SL_VORDER", None, "linear|cubic", "SL: vertical gather order (default linear)"),
  ("adv", "--adv-cfl",      "ADV_CFL",      None,   "X",   "horizontal CFL target (production 0.5)"),
  ("adv", "--adv-passive",  "ADV_PASSIVE",  None,   "0|1", "TEST: advect ONE total-sulfate tracer (+ the two gases) and rescale every bin by the cell's mass ratio (frozen per-cell shape); score against the same run with 0"),

@@ -137,6 +137,13 @@ ADV_SL_ITER = int(os.environ.get('ADV_SL_ITER', '2'))
 ADV_SL_RHO = os.environ.get('ADV_SL_RHO', '0') != '0'
 ADV_SL_SPLIT = os.environ.get('ADV_SL_SPLIT', 'strang').lower()
 ADV_SL_JAC = os.environ.get('ADV_SL_JAC', '1') != '0'
+# Opt-in (default 0 = the numpy path): resample the step's winds in time on the
+# device instead of on the host. Same float32 formula (1-a)*H[idx] + a*H[idx+1]
+# with the host-computed idx/a; the two products are materialised by one jit
+# and added by a second, so no fused multiply-add can change bits. Engages only
+# for float32 gathers on float32 ndarray winds and n != K+1 (the production
+# case); otherwise falls back to the numpy path. The first call prints which.
+ADV_SL_DEVICE_RESAMPLE = os.environ.get('ADV_SL_DEVICE_RESAMPLE', '0') != '0'
 _SPLITS = ('lie', 'strang')
 if ADV_SL_SPLIT not in _SPLITS:
     raise ValueError(f"ADV_SL_SPLIT={ADV_SL_SPLIT!r}; expected one of {_SPLITS}")
@@ -163,7 +170,8 @@ def describe():
                if ADV_SL_SPLIT == 'strang' else
                ", Lie H-V with the air mass carried (ADV_SL_SPLIT=lie ADV_SL_RHO=1)"
                if ADV_SL_RHO else
-               ", Lie H-V with the air mass frozen at 1 (ADV_SL_SPLIT=lie ADV_SL_RHO=0)"))
+               ", Lie H-V with the air mass frozen at 1 (ADV_SL_SPLIT=lie ADV_SL_RHO=0)")
+            + (", device wind resample ADV_SL_DEVICE_RESAMPLE=1" if ADV_SL_DEVICE_RESAMPLE else ""))
 
 
 # ---- mass fixers (sums in float64) -------------------------------------------
@@ -483,11 +491,50 @@ def _to_sl(a, dtype):
     return jnp.swapaxes(jnp.asarray(a, dtype=dtype), -1, -2)
 
 
+@jax.jit
+def _resample_mul(wa, a, H0, H1):
+    return wa * H0, a * H1
+
+
+@jax.jit
+def _resample_add(p, q):
+    return p + q
+
+
+_resample_reported = False
+
+
 def _resample_winds(hours, K, dtype):
     """hours: list of n >= 2 (u, v, w) tuples at equally spaced times spanning
     the step. Returns (K+1, 3, nlev, nlat, nlon) winds at the sub-step nodes,
     linearly interpolated in time (exact when K+1 == n)."""
+    global _resample_reported
     n = len(hours)
+    if ADV_SL_DEVICE_RESAMPLE:
+        f32 = all(isinstance(x, np.ndarray) and x.dtype == np.float32 for h in hours for x in h)
+        dev = n != K + 1 and np.dtype(dtype) == np.float32 and f32
+        if not _resample_reported:
+            _resample_reported = True
+            why = ('' if dev else
+                   ' -- FALLING BACK to the numpy path ('
+                   + ('n == K+1' if n == K + 1 else
+                      f'gather dtype {np.dtype(dtype)}' if np.dtype(dtype) != np.float32 else
+                      'winds are ' + ','.join(sorted({f"{type(x).__name__}/{getattr(x, 'dtype', '?')}"
+                                                     for h in hours for x in h})))
+                   + ')')
+            print(f"  [sl_lr] ADV_SL_DEVICE_RESAMPLE=1: device wind resample "
+                  f"{'ENGAGED' if dev else 'not engaged'} (n={n}, K={K}){why}", flush=True)
+        if dev:
+            # same idx/a as the numpy path below, same float32 (1-a) on the host
+            t_h = np.linspace(0.0, 1.0, n)
+            t_k = np.linspace(0.0, 1.0, K + 1)
+            idx = np.clip(np.searchsorted(t_h, t_k, side='right') - 1, 0, n - 2)
+            a = ((t_k - t_h[idx]) / (t_h[idx + 1] - t_h[idx])).astype(np.float32)
+            a = a.reshape((K + 1, 1, 1, 1, 1))
+            H = jnp.stack([jnp.stack([jnp.asarray(x) for x in h]) for h in hours])   # (n,3,...)
+            ia = jnp.asarray(idx)
+            p, q = _resample_mul(jnp.asarray(1 - a), jnp.asarray(a), H[ia], H[ia + 1])
+            return _resample_add(p, q)
     # one pass: the CESM fields arrive as float32 already, so this is a single
     # copy (a per-array cast + a second stack was ~75 ms of host time per call)
     H = np.stack([np.stack(h) for h in hours]).astype(dtype, copy=False)      # (n,3,...)
@@ -560,7 +607,7 @@ def advect_step_batch(qb0, u0, v0, w0, u1, v1, w1, lat, dp, qfrozb, dt_total,
             raise ValueError(f"{name}={val!r}; expected one of {ok}")
     lat_np = np.asarray(lat, dtype=np.float64)
     dp_np = np.asarray(dp, dtype=np.float64)
-    nlon = int(np.asarray(qb0).shape[-1])
+    nlon = int(np.shape(qb0)[-1])   # shape only: np.asarray(qb0) pulled the whole f64 stack to the host
     grid = S.SLGrid.from_latitudes(lat_np, nlon, radius)
 
     # vertical coordinate of the vert='sl' gather: the true level pressures
