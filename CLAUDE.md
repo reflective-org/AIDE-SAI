@@ -61,10 +61,16 @@ would make a slot harder to swap. `README.md` is the orientation;
 default and, more importantly, *why* each one is what it is. Where `docs/`
 disagrees with MANIFEST, MANIFEST is current. Read it before changing physics.
 
-The TOMAS and radiation emulators, the engine A/B harness and the MAM4-JAX
-driver are not part of this repo (yet); an emulator would fill its slot behind
-the existing selector (`MICRO_ENGINE`, `RAD_ENGINE`). (`AER_SRC=mam4`, the default, is unrelated: it
-bins CESM's MAM4 output fields onto the TOMAS bins.)
+Emulators fill their slots behind the existing selectors (2026-11-23, docs/EMULATED_LINKING.md):
+`MICRO_ENGINE=emulator` (the TOMAS emulator, `src/microphysics/tomas_emulator.py`),
+`RAD_ENGINE=radem` (the window_gq aerosol-increment emulator, `src/radiation/radem.py`; one
+checkpoint per grid, the nets take fixed-length columns) and `MET_SRC=emu` (the JCM emulator P2@200
+stepped in the loop, `src/met/met_emu.py`, vendored model code in `src/atmos/aide_atmos/`), used by
+the presets `cesm_met_emulated`, `cesm_emulated` and `jcm_met_emulated`. Judge an emulator change by
+a coupled A/B against the numerical preset's runs (30 days, then the 2-year benchmark), never by a
+one-step score alone. The engine A/B harness, the training samplers and the MAM4-JAX driver are not
+part of this repo. (`AER_SRC=mam4`, the default, is unrelated: it bins CESM's MAM4 output fields
+onto the TOMAS bins.)
 
 ## Layout invariants
 

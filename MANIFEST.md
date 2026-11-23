@@ -58,7 +58,16 @@ hard-coded launcher presets that are visible only by diffing branches.
 | `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically |
 | `jcm_online_numerical` | jcm-strat AL7h **run live**, 6-hourly (`MET_SRC=jcm_online`; code from the `jcm-strat` slot, `models/jcm-strat` f3c2070; started from the same `JCM_DIR` chain) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19) — **statistically, not bitwise**: jcm-strat on GPU is not deterministic run to run (§ Code state) |
 
-All three also set `BC_SRC=clim`, `INIT_BIN=so4` and `ADV_VPOS=1`, and pin the
+| `cesm_met_emulated` (2026-11-23) | as `cesm_numerical` | as `cesm_numerical` | as `cesm_numerical` | — new; differs from `cesm_numerical` only in `MICRO_ENGINE=emulator` and `RAD_ENGINE=radem` (gen3 f09), so a comparison with the `cesm_numerical` runs is the emulators' error (docs/EMULATED_LINKING.md) |
+| `cesm_emulated` (2026-11-23) | the JCM emulator P2@200 stepped **in the loop** (`MET_SRC=emu`, `ATM_BUNDLE`), regridded on the GPU | as `cesm_numerical` | as `cesm_numerical` | — new; every slot with an emulator runs it; the bundle's one IC fixes `--h0 8766` (1997-01-01T06) |
+| `jcm_met_emulated` (2026-11-23) | as `jcm_numerical` | as `jcm_numerical` | as `jcm_numerical` | — new; `MICRO_ENGINE=emulator` + `RAD_ENGINE=radem` (gen3 JCM) on the JCM grid: the JCM attribution arm. The JCM radem checkpoint is NOT production-ready (2-year runs: heating spikes; docs/EMULATED_LINKING.md) |
+| `jcm_emulated` (2026-11-23) | the JCM emulator P2@200 **in the loop** on its own grid (`MET_SRC=emu`; P2's T63 L95 is the JCM grid, so no interpolation) | as `jcm_numerical` | as `jcm_numerical` | — new; every slot with an emulator runs it; `--h0 8766`. Same JCM-radem caveat (with P2 met its dT_rad diverges after ~day 548) |
+
+The three emulated presets name the weights by absolute path (`EMU_STUDENT`, `EMU_CKPT`,
+`EMU_NORM`, `RADEM_CKPT`, `ATM_BUNDLE`): machine paths, like `jcm_online_numerical`'s, until the
+weights are hosted. Their sha256 are in docs/EMULATED_LINKING.md.
+
+All three numerical presets also set `BC_SRC=clim`, `INIT_BIN=so4` and `ADV_VPOS=1`, and pin the
 same tomas-jax and jax-rrtmgp slots; `jcm_online_numerical` also pins
 `jcm-strat` and sets three machine paths (`JCM_PY`, `JCM_CACHE`,
 `JCM_SCRATCH`). A dry run of each preset with those runs' scenario resolves the knob

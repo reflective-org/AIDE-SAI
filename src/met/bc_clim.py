@@ -122,11 +122,16 @@ class ClimArchive:
             self.meta, self.met, self.met_vars = None, None, {}
             self.ntime = int(ntime) if ntime is not None else 20 * HOURS_PER_YEAR + 1
             return
-        # the met file: winds and temperature
-        with open(os.path.join(met_dir, 'meta.json')) as f:
-            self.meta = json.load(f)
-        self.met = {k: np.load(os.path.join(met_dir, f'{k}.npy'), mmap_mode='r')
-                    for k in ('u', 'v', 'omega', 'T', 'T_full')}
+        # the met file: winds and temperature. Or (2026-11-23, coupling.py
+        # MET_SRC=emu) an in-process source with the same meta and per-frame
+        # fields (met_emu.EmuMet), whose frames are made on demand.
+        if not isinstance(met_dir, (str, os.PathLike)):
+            self.meta, self.met = met_dir.meta, met_dir.met
+        else:
+            with open(os.path.join(met_dir, 'meta.json')) as f:
+                self.meta = json.load(f)
+            self.met = {k: np.load(os.path.join(met_dir, f'{k}.npy'), mmap_mode='r')
+                        for k in ('u', 'v', 'omega', 'T', 'T_full')}
         self.klevs = [int(k) for k in self.meta['klevs']]
         self.krad = [int(k) for k in self.meta['krad']]
         self.hour0 = int(self.meta['hour0']); self.step = int(self.meta['step_hours'])

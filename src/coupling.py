@@ -412,8 +412,24 @@ JCM_CACHE = os.environ.get('JCM_CACHE') or os.path.join(JCM_STRAT_PATH, 'cache')
 JCM_SCRATCH = os.environ.get('JCM_SCRATCH') or os.path.join(JCM_STRAT_PATH, 'scratch')
 JCM_WORK = os.environ.get('JCM_WORK', 'jcm_online')
 JCM_TE_CORRECTION = os.environ.get('JCM_TE_CORRECTION') or None   # None: the slot's AL7h.nc
-if MET_SRC not in ('cesm', 'file', 'jcm', 'jcm_online'):
-    raise SystemExit(f"MET_SRC={MET_SRC!r} is not valid: cesm | file | jcm | jcm_online")
+# 2026-11-23 (emulated linking): MET_SRC=emu. The same four fields on the same
+# f09 band as MET_SRC=file, but made IN THIS PROCESS by the JCM emulator P2@200
+# stepped one 6 h step at a time as the loop asks for frames, and regridded on the
+# GPU with the code that wrote the MET_SRC=file sets (src/met/met_emu.py). Its
+# frames are atmos_rollout.py's for the same bundle and seed. ATM_BUNDLE = the
+# emulator bundle (weights, normalisation, IC, fixer terms, CESM grid), ATM_SEED
+# the noise seed, ATM_FEEDBACK=1 hands the anomaly radiation's aerosol heating
+# back to the atmosphere (off by default: one-way like every other linking).
+ATM_BUNDLE = os.environ.get('ATM_BUNDLE', '')
+ATM_SEED = int(os.environ.get('ATM_SEED', '0'))
+ATM_FEEDBACK = os.environ.get('ATM_FEEDBACK', '0') != '0'
+if MET_SRC not in ('cesm', 'file', 'jcm', 'jcm_online', 'emu'):
+    raise SystemExit(f"MET_SRC={MET_SRC!r} is not valid: cesm | file | jcm | jcm_online | emu")
+MET_FRAMES = MET_SRC in ('file', 'emu')          # step-end frames on the f09 band, not the archive
+if MET_SRC == 'emu' and not ATM_BUNDLE:
+    raise SystemExit("MET_SRC=emu needs ATM_BUNDLE (the P2@200 emulator bundle directory)")
+if MET_SRC == 'emu' and (ADV_SL_HOURLY or os.environ.get('BC_SRC', 'cesm').lower() != 'clim'):
+    raise SystemExit("MET_SRC=emu needs BC_SRC=clim and the 6-hourly step ends (ADV_SL_HOURLY=0)")
 MET_JCM = MET_SRC in ('jcm', 'jcm_online')      # the JCM grid, whichever way it is fed
 if MET_Q not in ('bc', 'met'):
     raise SystemExit(f"MET_Q={MET_Q!r} is not valid: bc | met")
@@ -654,7 +670,12 @@ PHYS_CFG = np.array([float(WET_SETTLING), float(WET_OPTICS), float(SETTLE_ENABLE
                      float(MET_Q == 'met'),
                      # 2026-11-18 (live JCM), appended: JCM run live
                      # (MET_SRC=jcm_online) rather than read from its output.
-                     float(MET_SRC == 'jcm_online')])
+                     float(MET_SRC == 'jcm_online'),
+                     # 2026-11-23 (emulated linking), appended: the radem radiation
+                     # emulator (RAD_ENGINE=radem) and its reference interpolation
+                     float(os.environ.get('RAD_ENGINE', 'rrtmgp').lower() == 'radem'),
+                     float(os.environ.get('RAD_REF_INTERP_H', '0')),
+                     float(MET_SRC == 'emu'), float(ATM_FEEDBACK)])
 PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'MICRO_ENGINE=emulator', 'ADV_SCHEME=sl', 'RAD_ENGINE=emulator',
                           'ADV_SCHEME=ffsl', 'MET_SRC=file', 'BC_SRC=clim', 'ADV_PASSIVE',
@@ -662,7 +683,8 @@ PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'RAD_SOLAR_ALIGN', 'MICRO_ENGINE=full', 'ADV_SCHEME=lr',
                           'MET_RH', 'RAD_T_FEEDBACK', 'MICRO_DT', 'MICRO_NCOAG',
                           'MICRO_COAG=adaptive', 'MICRO_FION', 'MET_SRC=jcm', 'MET_Q=met',
-                          'MET_SRC=jcm_online'])
+                          'MET_SRC=jcm_online', 'RAD_ENGINE=radem', 'RAD_REF_INTERP_H',
+                          'MET_SRC=emu', 'ATM_FEEDBACK'])
 ALPHA_COND = float(os.environ.get('ALPHA_COND', '1.0'))  # H2SO4 accommodation coeff (SAI box-model value)
 # ---- diurnal OH from a solar-zenith-angle curve (Hanisco et al. 2001, Fig. 1) ----
 # DEFAULT ON. The SO2+OH chemistry uses OH(theta) read off the paper's figure
@@ -833,10 +855,37 @@ RAD_REF_CACHE = os.environ.get('RAD_REF_CACHE',
                                os.path.join(_paths.INPUTS, 'cache', 'rad_ref'))
 RAD_SAMPLE_EVERY = int(os.environ.get('RAD_SAMPLE_EVERY', '0'))
 if RAD_ENGINE == 'emulator' or RAD_REF:
-    raise SystemExit("RAD_ENGINE=emulator / RAD_REF: the radiation emulator is not part "
-                     "of this repo")
-if RAD_ENGINE != 'rrtmgp':
-    raise SystemExit(f"RAD_ENGINE={RAD_ENGINE!r} is not valid: rrtmgp")
+    raise SystemExit("RAD_ENGINE=emulator / RAD_REF: the older column-network radiation emulator "
+                     "is not part of this repo (RAD_ENGINE=radem is)")
+if RAD_ENGINE not in ('rrtmgp', 'radem'):
+    raise SystemExit(f"RAD_ENGINE={RAD_ENGINE!r} is not valid: rrtmgp | radem")
+# RAD_ENGINE=radem (2026-11-23, emulated linking): the RRTMGP solves of RAD_MODE=anomaly are
+# replaced by the window_gq aerosol-increment emulator radem (src/radiation/radem.py), two
+# parts, both per-column MLPs on the f09 CESM column:
+#   INC(aer, T) = HR(aer, T) - HR(no aer, T): an SW net (one pass per window_gq Gauss node,
+#                 combined with the node weights as the physics combines its node solves)
+#                 and an LW net;
+#   P(T, dT)    = HR(no aer, T+dT) - HR(no aer, T): the clear-sky (Planck) damping net.
+# anomaly = INC(evolved, T+dT) + P(T, dT) - INC(MAM4 reference, T), the physics anomaly
+# term by term. Under RAD_T_FEEDBACK=0 the evolved call's optics (wet composition) are
+# built at T_met and only its emission sees T_met + dT_rad, as in the physics call.
+# RADEM_CKPT = directory with sw.npz lw.npz pl.npz (gen2: radem_gen2_20261119, needs
+# RADEM_MUFEAT=1). The nets take fixed-length flattened columns, so a checkpoint fits one grid
+# only (f09: radem_gen3_f09; JCM: radem_gen3_jcm); a mismatch is refused at startup.
+RADEM_CKPT = os.environ.get('RADEM_CKPT', '')
+if RAD_ENGINE == 'radem':
+    if not RADEM_CKPT:
+        raise SystemExit('RAD_ENGINE=radem needs RADEM_CKPT (a directory with sw.npz lw.npz pl.npz)')
+    if RAD_MODE != 'anomaly':
+        raise SystemExit(f'RAD_ENGINE=radem emulates RAD_MODE=anomaly only (got {RAD_MODE})')
+# RAD_REF_INTERP_H (radem, 2026-11-19): the anomaly-mode reference aerosol is re-binned from
+# MAM4 only every RAD_REF_INTERP_H hours (in a worker thread, one anchor ahead) and linearly
+# interpolated in time between the two bracketing anchors. Under BC_SRC=clim the reference
+# is a day-of-year-interpolated monthly climatology; measured interpolation error vs
+# re-binning every step 0.001 % rms. 0 = re-bin every step (default). radem only.
+RAD_REF_INTERP_H = int(os.environ.get('RAD_REF_INTERP_H', '0'))
+if RAD_REF_INTERP_H and RAD_ENGINE != 'radem':
+    raise SystemExit('RAD_REF_INTERP_H is implemented for RAD_ENGINE=radem only')
 # ARF_toa is an INSTANTANEOUS TOA flux difference at the radiation call's own
 # solar time. Its SW part therefore swings with the diurnal cycle, and with the
 # default 6h step it is sampled 4x/day -- so a single sample's global mean
@@ -1695,6 +1744,7 @@ def open_var(var):
 
 
 _BC_INSTALLED = False
+_EMU_MET = None      # MET_SRC=emu: the in-loop atmosphere (met_emu.EmuMet), built by install_bc_source
 
 
 def install_bc_source():
@@ -1705,9 +1755,23 @@ def install_bc_source():
     if _BC_INSTALLED:
         return
     _BC_INSTALLED = True
-    if BC_SRC == 'clim' and MET_SRC == 'file':
+    if BC_SRC == 'clim' and MET_FRAMES:
         import bc_clim
-        _clim = bc_clim.ClimArchive(CLIM_FILE, MET_DIR)
+        global _EMU_MET
+        if MET_SRC == 'emu':
+            import met_emu
+            # the grid is the climatology's: the JCM grid (the emulator's own, 96 x 192) -> frames on it
+            # as they are; otherwise f09 -> regridded (MetWriter)
+            _zc = np.load(CLIM_FILE, mmap_mode='r')
+            _native = None
+            if _zc['lat'].size == 96:
+                _native = dict(hyam=np.asarray(_zc['hyam']), hybm=np.asarray(_zc['hybm']), P0=float(_zc['P0']),
+                               lat=np.asarray(_zc['lat']), lon=np.asarray(_zc['lon']),
+                               p_lo_hpa=P_LO_HPA, p_hi_hpa=P_HI_HPA)
+            _EMU_MET = met_emu.EmuMet(ATM_BUNDLE, H0, (N_HOURS // STEP_HOURS) + 2, seed=ATM_SEED,
+                                      feedback=ATM_FEEDBACK, native=_native)
+            print(f"=== MET_SRC=emu: {_EMU_MET.describe()} ===", flush=True)
+        _clim = bc_clim.ClimArchive(CLIM_FILE, _EMU_MET if MET_SRC == 'emu' else MET_DIR)
         open_var = _clim.open_var
         print(f"=== BC_SRC=clim: no archive files; {_clim.describe()} ===", flush=True)
     elif BC_SRC == 'clim' and MET_JCM:
@@ -1822,7 +1886,7 @@ def main():
     # a state on another, and two grids can share (nlat, nlon, nlev) -- the
     # geometry tuple alone would not see it. [met code (0 cesm, 1 file, 2 jcm, 3 jcm_online),
     # nlat, nlon, nlev, first lat, last lat, top hPa, bottom hPa]. Append-only.
-    GRID_CFG = np.array([float({'cesm': 0, 'file': 1, 'jcm': 2, 'jcm_online': 3}[MET_SRC]),
+    GRID_CFG = np.array([float({'cesm': 0, 'file': 1, 'jcm': 2, 'jcm_online': 3, 'emu': 4}[MET_SRC]),
                          float(nlat), float(nlon), float(nlev),
                          float(lat[0]), float(lat[-1]),
                          float(PLEV_PA[0] / 100), float(PLEV_PA[-1] / 100)])
@@ -1878,6 +1942,25 @@ def main():
                  "T_met drives microphysics, settling, RH and the optics; dT_rad and "
                  "hr_kday are diagnostics (dT_rad enters only the perturbed call's "
                  "emission temperature)"), flush=True)
+    radem = None
+    if rad is not None and RAD_ENGINE == 'radem':
+        import radem as _radem_mod
+        if rad.solar_mode != 'window_gq':
+            raise SystemExit(f'RAD_ENGINE=radem: the gen2 nets emulate the window_gq solve '
+                             f'(RAD_SOLAR={rad.solar_mode})')
+        radem = _radem_mod.Emulator(RADEM_CKPT, rad)
+        # the checkpoint's input width must be this grid's (column levels, band levels, optics bands)
+        _nzc, _nzb = int(rad.nzc), int(rad.nzb)
+        _want = {'sw': 3 * _nzc + 2 + (2 if _radem_mod.MU_FEATS else 0) + 3 * rad.nb_sw * _nzb + rad.nb_sw,
+                 'lw': 4 * _nzc + 1 + 3 * rad.nb_lw * _nzb + rad.nb_lw}
+        for _k, _n in _want.items():
+            _have = int(np.asarray(radem.P[_k]['x_mu']).size)
+            if _have != _n:
+                raise SystemExit(f'RAD_ENGINE=radem: {RADEM_CKPT}/{_k}.npz takes {_have} inputs, this grid '
+                                 f'({_nzc}-level column, {_nzb} band levels) needs {_n}: a checkpoint of another grid?')
+        print(f"  RAD_ENGINE=radem: {RADEM_CKPT} (nets {sorted(radem.P)}, "
+              f"RADEM_MUFEAT={os.environ.get('RADEM_MUFEAT', '0')}, RADEM_FAST={int(_radem_mod.FAST)}); "
+              f"no RRTMGP solve in the loop; RAD_REF_INTERP_H={RAD_REF_INTERP_H}", flush=True)
     #change in temperature from radiation intialized here    
     dT_rad = jnp.zeros((nlev, nlat, nlon), dtype=jnp.float64)
     # Heating rate of the LAST radiation call [K/day], held between calls (it
@@ -1916,15 +1999,23 @@ def main():
         return np.clip(dRH['RELHUM'].isel(time=H0 + t, lev=klevs).values / 100.0,
                        0.0, 1.0)
 
-    if MET_SRC == 'file':
+    if MET_FRAMES:
         # The four meteorology readers above, re-pointed at MET_DIR (see the
-        # MET_SRC note at the top). The file is checked against THIS run's grid
-        # and band, and every hour the loop asks for must be one of its frames.
-        import json
-        with open(os.path.join(MET_DIR, 'meta.json')) as _f:
-            met_meta = json.load(_f)
-        met = {k: np.load(os.path.join(MET_DIR, f'{k}.npy'), mmap_mode='r')
-               for k in ('u', 'v', 'omega', 'T')}
+        # MET_SRC note at the top) or, under MET_SRC=emu, at the in-loop
+        # atmosphere's frames (same keys, same meta). The frames are checked
+        # against THIS run's grid and band, and every hour the loop asks for
+        # must be one of them.
+        if MET_SRC == 'emu':
+            met_meta, met = _EMU_MET.meta, _EMU_MET.met
+            if RESUME and ATM_FEEDBACK:
+                raise SystemExit('MET_SRC=emu with ATM_FEEDBACK=1: RESUME is not supported (the heating '
+                                 'handed to the atmosphere is not checkpointed)')
+        else:
+            import json
+            with open(os.path.join(MET_DIR, 'meta.json')) as _f:
+                met_meta = json.load(_f)
+            met = {k: np.load(os.path.join(MET_DIR, f'{k}.npy'), mmap_mode='r')
+                   for k in ('u', 'v', 'omega', 'T')}
         _mk = [int(k) for k in met_meta['klevs']]
         if _mk != [int(k) for k in klevs]:
             raise SystemExit(f"MET_DIR band levels {_mk[0]}..{_mk[-1]} != this run's "
@@ -1961,7 +2052,7 @@ def main():
         def temp(t):
             return np.array(met['T'][met_frame(t)])
 
-        print(f"  MET_SRC=file: {MET_DIR}\n"
+        print(f"  MET_SRC={MET_SRC}: {MET_DIR if MET_SRC == 'file' else _EMU_MET.describe()}\n"
               f"    {MET_N} frames x {MET_STEP} h from archive hour {MET_H0} "
               f"({met_meta.get('t0')}), source {met_meta.get('source')}; U/V/OMEGA/T from the file; "
               f"gases, reservoirs, surface and the radiation column below the band from "
@@ -2051,6 +2142,24 @@ def main():
     # (radiation.py integrates per-bin Mie tables); the prognostic state may be
     # something else (e.g. a modal scheme, via AER_FILL_FN)
     aer_fill_rad = aer_fill
+    if RAD_REF_INTERP_H:
+        # (radem) reference aerosol at anchors every RAD_REF_INTERP_H hours, binned in a
+        # worker thread one anchor ahead, linearly interpolated in time between them
+        from concurrent.futures import ThreadPoolExecutor as _TPE
+        _ref_pool = _TPE(max_workers=1, thread_name_prefix='refbin'); _ref_fut = {}
+
+        def _ref_bins(t_):
+            if t_ not in _ref_fut:
+                _ref_fut[t_] = _ref_pool.submit(lambda tt=t_: jax.block_until_ready(
+                    jnp.asarray(np.asarray(aer_fill_rad(tt, klevs)[0]))))
+            return _ref_fut[t_]
+
+        def ref_interp(it_):
+            P_ = RAD_REF_INTERP_H; ta = (it_ // P_) * P_; tb = ta + P_
+            a_ = _ref_bins(ta).result(); b_ = _ref_bins(tb).result(); _ref_bins(tb + P_)   # prefetch next anchor
+            for k_ in [k_ for k_ in _ref_fut if k_ < ta]:
+                del _ref_fut[k_]
+            return a_ + (b_ - a_) * ((it_ - ta) / P_)
     if AER_FILL_FN is not None:
         def aer_fill(t, levs, lat_idx=None):
             return AER_FILL_FN(ds_mam, t, levs, lat_idx)
@@ -2802,8 +2911,61 @@ def main():
     # trajectory then diverges from an uninterrupted run. Identical to winds(0)
     # when s_start == 0.
     u0, v0, w0 = winds(s_start * STEP_HOURS)
+
+    # (radem) everything the emulated anomaly needs except the step's evolved aerosol is
+    # known at the start of the step -- T at it1, dT_rad from the last call, the MAM4
+    # reference -- so the reference increment, the damping P(T, dT) and the evolved
+    # call's wet weights run in a worker thread while the GPU advects and the
+    # microphysics runs. Same calls, same arguments as inline: bit-identical.
+    # Only where the worker's reads touch no netCDF file (not thread-safe): the
+    # meteorology from MET_SRC=file/emu and the boundaries from the climatology.
+    RAD_PREFETCH = (radem is not None and bool(RAD_REF_INTERP_H) and MET_SRC in ('file', 'emu')
+                    and BC_SRC == 'clim' and os.environ.get('RAD_PREFETCH', '1') != '0')
+    if RAD_PREFETCH:
+        from concurrent.futures import ThreadPoolExecutor as _TPE2
+        _radpool = _TPE2(max_workers=1, thread_name_prefix='radpre')
+
+    def _rad_pre(it1_, T_b_, dTn_):
+        num_ref_ = jnp.asarray(ref_interp(it1_))
+        pl__ = radem.planck(H0 + it1_, T_b_, dTn_)
+        e0_ = radem.increment(H0 + it1_, num_ref_, T_b_)
+        # the evolved call's wet composition: at T_met under RAD_T_FEEDBACK=0
+        wwt1_ = radem.prep_wt(H0 + it1_, T_b_ + dTn_ if RAD_T_FEEDBACK else T_b_)
+        if wwt1_ is not None:
+            jax.block_until_ready(wwt1_)
+        return num_ref_, pl__, e0_, wwt1_
+
+    _PROF2 = os.environ.get('PERF_PROF') == '1'     # finer synced stage timings ([prof2] lines)
+
+    # ---- prefetch of the step-end boundary reads (AIDE-SAI-link io agent, 2026-11-13) ----
+    # The open-face gases, the polar-cap refresh and the reservoir slabs depend only on
+    # the hour it1, not on the step's result, so their host work (climatology read +
+    # lognormal re-binning, ~0.6 s/step) runs in a worker thread while the GPU advects.
+    # Same functions, same arguments, same values: bit-identical. BC_SRC=clim only (the
+    # archive path reads netCDF, which is not thread-safe), never on a run's first step
+    # (the climatology's lazy member loads happen there, single-threaded).
+    BC_PREFETCH = (BC_SRC == 'clim') and os.environ.get('IO_BC_PREFETCH', '1') != '0'
+    if BC_PREFETCH:
+        from concurrent.futures import ThreadPoolExecutor as _TPE3
+        _bcpool = _TPE3(max_workers=1, thread_name_prefix='bcread')
+
+    def _bc_reads(it1_):
+        r = {'gtop': read_gases(ds_gas, it1_, lev_top), 'gbot': read_gases(ds_gas, it1_, lev_bot)}
+        if pol_idx.size:
+            r['pol'] = (aer_fill(it1_, klevs, lat_idx=pol_idx), read_gases(ds_gas, it1_, klevs, lat_idx=pol_idx))
+        if ADV_WCONT:
+            r['wtop'] = aer_fill(it1_, lev_top)
+            r['wbot'] = aer_fill(it1_, lev_bot)
+        return r
     for s in range(s_start, N_STEPS):
+        _tstep0 = time.perf_counter()
         it0 = s * STEP_HOURS; it1 = (s + 1) * STEP_HOURS   # hourly time indices
+        _bc_fut = _bcpool.submit(_bc_reads, it1) if (BC_PREFETCH and s > s_start) else None
+        _rad_fut = None
+        if RAD_PREFETCH and s > s_start and (s + 1) % RAD_EVERY == 0:
+            _Tb_pre = np.asarray(temp(it1), np.float64)
+            _dT_pre = np.asarray(dT_rad)
+            _rad_fut = _radpool.submit(_rad_pre, it1, _Tb_pre, _dT_pre)
         tw = time.time()
         #these winds will eventually be used to advect the tracers from it0 to it1 using advection scheme
         u1, v1, w1 = winds(it1)
@@ -3068,8 +3230,9 @@ def main():
             num = num.at[:, -N_BC_BOT:].set(jnp.asarray(num_bot))
             mas = mas.at[:, -N_BC_BOT:].set(jnp.asarray(mas_bot))
         # gases get the same open-BC treatment from CESM's SO2/H2SO4 fields
-        so2_top, h2so4_top = read_gases(ds_gas, it1, lev_top)
-        so2_bot, h2so4_bot = read_gases(ds_gas, it1, lev_bot)
+        _bcp = _bc_fut.result() if _bc_fut is not None else None
+        so2_top, h2so4_top = _bcp['gtop'] if _bcp else read_gases(ds_gas, it1, lev_top)
+        so2_bot, h2so4_bot = _bcp['gbot'] if _bcp else read_gases(ds_gas, it1, lev_bot)
         # BC_GAS=flux: give the gases the SAME flux boundary as the aerosol instead
         # of a Dirichlet clamp. Why this matters: clamping H2SO4 at an edge level
         # while the aerosol there is open (BC_EDGE=open) is an infinite gas SOURCE
@@ -3107,9 +3270,12 @@ def main():
         # ---- 4. polar-cap refresh: freeze target for NEXT step's advection ----
         if pol_idx.size:
             #polar cells are reset at all vertical levels to MAM4..not just the BC
-            num_pol, mas_pol = aer_fill(it1, klevs, lat_idx=pol_idx)
-            # gases refresh from CESM SO2/H2SO4 at the same polar rows
-            so2_pol, h2so4_pol = read_gases(ds_gas, it1, klevs, lat_idx=pol_idx)
+            if _bcp:
+                (num_pol, mas_pol), (so2_pol, h2so4_pol) = _bcp['pol']
+            else:
+                num_pol, mas_pol = aer_fill(it1, klevs, lat_idx=pol_idx)
+                # gases refresh from CESM SO2/H2SO4 at the same polar rows
+                so2_pol, h2so4_pol = read_gases(ds_gas, it1, klevs, lat_idx=pol_idx)
             #updates the frozen polar values for the next step's advection
             qfroz = qfroz.at[:, :, pol_idx].set(
                 jnp.concatenate([jnp.asarray(num_pol), jnp.asarray(mas_pol),
@@ -3126,10 +3292,10 @@ def main():
         # ALL levels on polar rows, so it would otherwise undo the BC_BOT_AER
         # scaling on the bottom face at high latitudes.
         if ADV_WCONT:
-            num_r, mas_r = aer_fill(it1, lev_top)
+            num_r, mas_r = _bcp['wtop'] if _bcp else aer_fill(it1, lev_top)
             qfroz = qfroz.at[:NA, :N_BC_TOP].set(jnp.asarray(num_r))
             qfroz = qfroz.at[NA:2*NA, :N_BC_TOP].set(jnp.asarray(mas_r))
-            num_r, mas_r = aer_fill(it1, lev_bot)
+            num_r, mas_r = _bcp['wbot'] if _bcp else aer_fill(it1, lev_bot)
             qfroz = qfroz.at[:NA, -N_BC_BOT:].set(jnp.asarray(num_r) * BC_BOT_AER)
             qfroz = qfroz.at[NA:2*NA, -N_BC_BOT:].set(jnp.asarray(mas_r) * BC_BOT_AER)
             qfroz = qfroz.at[2*NA, :N_BC_TOP].set(jnp.asarray(so2_top))
@@ -3173,17 +3339,53 @@ def main():
                 # file's (the archive's T would put a (T_file - T_CESM) Planck
                 # term into the anomaly); the reference solve is then not an
                 # archive-only quantity and is never served from the cache
-                T_met_band = temp(it1) if MET_SRC == 'file' else None
-                if T_met_band is None and rad.ref_ready(H0 + it1):
-                    num_ref = None
+                T_met_band = temp(it1) if MET_FRAMES else None
+                if radem is not None:
+                    # radem: INC(evolved, T+dT) + P(T, dT) - INC(reference, T), T = the band T of
+                    # the met source at it1 (both calls); see RAD_ENGINE=radem
+                    if _rad_fut is not None:
+                        num_ref, pl_, e0, _wwt1 = _rad_fut.result()
+                        T_b, _dTn = _Tb_pre, _dT_pre
+                    else:
+                        T_b = np.asarray(temp(it1), np.float64); _dTn = np.asarray(dT_rad)
+                        num_ref = jnp.asarray(ref_interp(it1) if RAD_REF_INTERP_H
+                                              else aer_fill_rad(it1, klevs)[0])
+                        pl_ = radem.planck(H0 + it1, T_b, _dTn)
+                        e0 = radem.increment(H0 + it1, num_ref, T_b)
+                        _wwt1 = radem.prep_wt(H0 + it1, T_b + _dTn if RAD_T_FEEDBACK else T_b)
+                    e1 = radem.increment(H0 + it1, aer_to_bins(num, mas)[0], T_b + _dTn, wwt=_wwt1)
+                    hr_anom = jnp.asarray((e1['sw'] + e1['lw'] + pl_['sw'] + pl_['lw'] - e0['sw'] - e0['lw'])
+                                          / 86400.0, jnp.float64)
+                    # a non-finite emulator output must not run on silently: with RAD_T_FEEDBACK=1 it would
+                    # poison the microphysics; with 0 every radiation output (dT_rad, hr, ARF, frames) from
+                    # here on (2026-11-23: one P2-met control went NaN at day 519, aerosol unaffected)
+                    if not bool(jnp.isfinite(hr_anom).all()):
+                        _bad = np.argwhere(~np.isfinite(np.asarray(hr_anom)))
+                        _parts = {n_: int((~np.isfinite(np.asarray(v_))).sum()) for n_, v_ in
+                                  (('INC_evolved', e1['sw'] + e1['lw']), ('P', pl_['sw'] + pl_['lw']),
+                                   ('INC_ref', e0['sw'] + e0['lw']), ('dT_rad_in', _dTn))}
+                        raise SystemExit(f'RAD_ENGINE=radem: non-finite heating at step {s} (hour {H0 + it1}) in '
+                                         f'{len(_bad)} cells, first (lev, lat, lon) {_bad[:3].tolist()}; '
+                                         f'non-finite cells per term {_parts}. The state checkpoint before it '
+                                         f'is intact; resume with RAD_ENGINE=rrtmgp to continue on physics.')
+                    # TOA terms relative to the clear sky at T (common to both calls, cancels in the
+                    # forcing): sw_dn_toa is 0, so frames3d toa_sw_dn / toa_net_abs are NOT the
+                    # absolute fluxes under radem; toa_arf and aod550 mean what they mean in physics
+                    _z0 = np.zeros_like(e1['swup'], np.float64)
+                    drad1 = {'sw_dn_toa': _z0, 'sw_up_toa': e1['swup'] + pl_['swup'],
+                             'olr': e1['olr'] + pl_['olr'], 'aod550': e1['aod']}
+                    drad0 = {'sw_dn_toa': _z0, 'sw_up_toa': e0['swup'], 'olr': e0['olr'], 'aod550': e0['aod']}
                 else:
-                    num_ref, _ = aer_fill_rad(it1, klevs)
-                    num_ref = jnp.asarray(num_ref)
-                #compute the heating anomaly with the current aerosol and heating states relative to the reference value
-                #hr_anom = HR(num)-HR(num_ref)
-                _kw = {} if RAD_T_FEEDBACK else dict(optics_at_met=True)
-                hr_anom, drad1, drad0 = rad.heating_anomaly(
-                    H0 + it1, aer_to_bins(num, mas)[0], num_ref, dT_rad, T_band=T_met_band, **_kw)
+                    if T_met_band is None and rad.ref_ready(H0 + it1):
+                        num_ref = None
+                    else:
+                        num_ref, _ = aer_fill_rad(it1, klevs)
+                        num_ref = jnp.asarray(num_ref)
+                    #compute the heating anomaly with the current aerosol and heating states relative to the reference value
+                    #hr_anom = HR(num)-HR(num_ref)
+                    _kw = {} if RAD_T_FEEDBACK else dict(optics_at_met=True)
+                    hr_anom, drad1, drad0 = rad.heating_anomaly(
+                        H0 + it1, aer_to_bins(num, mas)[0], num_ref, dT_rad, T_band=T_met_band, **_kw)
                 #update the radiative temperature increment
                 dT_rad = dT_rad + hr_anom * dt_rad_sec
                 hr_kday = np.asarray(hr_anom, np.float64) * 86400.0
@@ -3208,7 +3410,7 @@ def main():
             elif RAD_MODE == 'flux':
                 # no feedback: the evolved aerosol at the meteorology's own
                 # temperature, dT_rad untouched (stays 0); see RAD_MODE
-                T_met_band = temp(it1) if MET_SRC == 'file' else None
+                T_met_band = temp(it1) if MET_FRAMES else None
                 hr_flux, drad1 = rad.heating(H0 + it1, aer_to_bins(num, mas)[0],
                                              T_band_override=T_met_band, split=True)
                 hr_kday = np.asarray(hr_flux, np.float64) * 86400.0
