@@ -1927,7 +1927,8 @@ def main():
         rad = radiation.RadiationDriver(open_var, klevs, lat, lon,
                                         DP_BIN * 1e-9,
                                         mmid_kg=MMID, rho_dry=RHO_AER,
-                                        solar_window_h=STEP_HOURS * RAD_EVERY)
+                                        solar_window_h=STEP_HOURS * RAD_EVERY,
+                                        split_only=(RAD_MODE == 'flux'))
         if RAD_REF_CACHE not in ('0', ''):
             import rad_cache
             rad.ref_cache = rad_cache.RefCache(RAD_REF_CACHE, rad.cache_key(**rad_ref_src()))

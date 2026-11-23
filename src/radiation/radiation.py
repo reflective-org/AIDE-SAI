@@ -103,8 +103,9 @@ TSI_DEFAULT = 1361.0           # W/m2; per-step irradiance override possible
 # The RAD_FAST path (see the RAD_FAST block below) takes its own default of
 # 192 = the whole globe in one chunk: the solve is launch-bound, so every extra
 # chunk costs ~0.45 s; peak device memory 8.4 GB vs 6.6 GB at 96. An explicit
-# RAD_LAT_CHUNK sets both. RAD_LAT_CHUNK is the chunk loop's, RAD_LAT_CHUNK_FAST
-# the fast path's; which one a driver uses is decided per driver (RAD_FAST=auto).
+# RAD_LAT_CHUNK sets both (RAD_LAT_CHUNK_FAST below is a module constant, not an
+# environment variable: RAD_LAT_CHUNK is the only knob); which one a driver uses
+# is decided per driver (RAD_FAST=auto).
 #
 # RAD_FAST (perf switch; 2026-11-23 default auto, was 0):
 #   unset/auto  ON where validated -- decided per RadiationDriver at construction
@@ -754,7 +755,7 @@ def rad_fast_summary(fast=None, why=()):
     return (f"{tag}1 (RAD_LAT_CHUNK={RAD_LAT_CHUNK_FAST} RAD_GBATCH={RAD_GBATCH} "
             f"RAD_DYN_MINOR={int(RAD_DYN_MINOR)} RAD_SPLIT_TROPO={int(RAD_SPLIT_TROPO)} "
             f"RAD_SKIP_CLOUD={int(RAD_SKIP_CLOUD)} RAD_SW_SKIP_NIGHT={int(RAD_SW_SKIP_NIGHT)} "
-            f"RAD_GQ_FAST={int(RAD_GQ_FAST)} RAD_SW_PAD={RAD_SW_PAD}"
+            f"RAD_GQ_FAST={int(RAD_GQ_FAST)} RAD_SW_PAD={RAD_SW_PAD} RAD_SW_MAXCOLS={RAD_SW_MAXCOLS}"
             + ("; calls other than the window_gq solve (split=True, one-solve solar modes) "
                "run the chunk loop, RAD_LAT_CHUNK=" + str(RAD_LAT_CHUNK)
                if RAD_FAST_MODE == 'auto' else "") + ")")
@@ -822,7 +823,10 @@ class RadiationDriver:
     def __init__(self, open_var, klevs, lat, lon, dp_bin_m,
                  g_lw='rrtmgp-gas-lw-g128.nc', g_sw='rrtmgp-gas-sw-g112.nc',
                  mmid_kg=None, rho_dry=None, solar=None, solar_window_h=6.0,
-                 solar_alpha=None, solar_nodes=None, solar_align=None):
+                 solar_alpha=None, solar_nodes=None, solar_align=None, split_only=False):
+        # split_only: every call this driver will get is split=True (coupling.py
+        # passes RAD_MODE == 'flux'), so the fast path would never run; RAD_FAST
+        # auto then resolves off and the header says so
         self.lat, self.lon = np.asarray(lat), np.asarray(lon)
         self.nlat, self.nlon = self.lat.size, self.lon.size
         # solar geometry (RAD_SOLAR above): solar_window_h is the interval one
@@ -968,15 +972,21 @@ class RadiationDriver:
         # _solve_fast_gq. RAD_FAST=1 refuses the rest instead of running an
         # untested mix (the chunk loop under the cloud-skip patches, or
         # _solve_fast); auto turns itself off there.
-        self.fast, self.fast_why = False, []
+        self.fast, self.fast_why, self.fast_keyed = False, [], False
         if RAD_FAST:
             nd = len(jax.devices())
             self.fast_why = [w for c, w in [
-                (nd != 1, f'{nd} GPUs (needs 1)'),
                 (not self.wet_optics, 'dry optics (needs WET_OPTICS=1)'),
+                (split_only, 'RAD_MODE=flux: every call is split=True'),
                 (self.solar_mode != 'window_gq', f'RAD_SOLAR={self.solar_mode} (needs window_gq)'),
                 (not (RAD_SW_SKIP_NIGHT and RAD_SKIP_CLOUD and RAD_GQ_FAST),
                  'RAD_SW_SKIP_NIGHT/RAD_SKIP_CLOUD/RAD_GQ_FAST must stay 1')] if c]
+            # the cache key's rad_fast follows everything EXCEPT the device count,
+            # so a builder on one pinned GPU and a run on several share a directory
+            # (the fast path is bit-identical to the chunk loop; see cache_key)
+            self.fast_keyed = not self.fast_why
+            if nd != 1:
+                self.fast_why.insert(0, f'{nd} GPUs (needs 1)')
             if self.fast_why and RAD_FAST_MODE == 'on':
                 raise SystemExit('radiation: RAD_FAST=1 is validated only for one GPU, wet optics and '
                                  'RAD_SOLAR=window_gq; here: ' + '; '.join(self.fast_why)
@@ -1703,6 +1713,9 @@ class RadiationDriver:
                 key['solar']['nodes'] = self.nodes
                 if self.align != 'centred':     # only here, so the centred caches' keys are unchanged
                     key['solar']['align'] = self.align
-        if self.fast:     # only then, so every RAD_FAST=0 cache key is unchanged
+        # only then, so every RAD_FAST=0 cache key is unchanged. fast_keyed, not
+        # fast: it ignores the visible device count (a multi-GPU auto run resolves
+        # off but must still hit the cache a one-GPU builder wrote, and vice versa)
+        if self.fast_keyed:
             key['rad_fast'] = 1
         return key

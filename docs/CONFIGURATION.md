@@ -165,6 +165,31 @@ emulator training; the labelling and training are not part of this repo (yet). D
 | `ADV_FFSL_CMAX` | `ffsl_lr.py` | `64` | largest \|Courant\| the `ffsl` whole-cell sum may span; a guard, not a limit (64 cells is 90° of longitude) |
 | `ADV_FFSL_FRAC` | `ffsl_lr.py` | `exact` | `ffsl` sliver fraction: `exact` (area of the sliver), `face`, `cell` ([PROCESSES.md](./PROCESSES.md) §1.10) |
 | `AIDE_PRESET` | `run_prod.py` | `cesm_numerical` | preset to apply when `--preset` is not given; set for the run to the preset's label |
+| `RAD_GBATCH` | `radiation.py` | `4` | `RAD_FAST` path: g-points per loop iteration (1 when `RAD_FAST=0`) |
+| `RAD_DYN_MINOR` | `radiation.py` | `1` | `RAD_FAST` path: exact dynamic-length minor-gas scan (`rrtmgp_batched.py`) |
+| `RAD_SPLIT_TROPO` | `radiation.py` | `1` | `RAD_FAST` path: static lower/upper split of that scan |
+| `RAD_SW_SKIP_NIGHT` | `radiation.py` | `1` | `RAD_FAST` path: SW solved on sunlit columns only; `0` turns `RAD_FAST=auto` off |
+| `RAD_SKIP_CLOUD` | `radiation.py` | `1` | `RAD_FAST` path: no cloud optics (the model has no clouds); `0` turns `RAD_FAST=auto` off |
+| `RAD_GQ_FAST` | `radiation.py` | `1` | `RAD_FAST` path: window_gq through the fast solve; `0` turns `RAD_FAST=auto` off |
+| `RAD_SW_PAD` | `radiation.py` | `4096` | `RAD_FAST` path: sunlit-column count padded to a multiple of this (bounds recompiles) |
+| `RAD_SW_MAXCOLS` | `radiation.py` | `1000000` | `RAD_FAST` path: most sunlit columns per SW solve (larger counts are chunked) |
+
+The `RAD_*` sub-knobs above are read at import and echoed in the
+`RAD_FAST=... -> 1 (...)` header line; they only matter where `RAD_FAST`
+resolves on. There is no `RAD_LAT_CHUNK_FAST` variable: the fast path's 192-row
+chunk is a module constant, and `RAD_LAT_CHUNK` sets both chunk sizes.
+
+**Performance switches (default on since 2026-11-23).** A bare run takes the
+radiation fast path (`RAD_FAST=auto`, on with one GPU, wet optics and
+`RAD_SOLAR=window_gq`; the header says `RAD_FAST=auto -> 0|1 (reason)`), the
+device microphysics adapter (`MICRO_WRAP_DEVICE=1`), device MAM4 binning
+(`MAM4_BIN_DEVICE=1`), the device SL wind resample (`ADV_SL_DEVICE_RESAMPLE=1`)
+and background checkpoint writes (`CKPT_ASYNC=1`). `MICRO_WRAP_DEVICE` and
+`MAM4_BIN_DEVICE` are not bit-identical (<= 2.5e-12 rel in a few cells, within
+run-to-run GPU noise). Setting all five to `0` runs the pre-2026-11-23 code
+path and reproduces the presets' 2-year runs bit for bit. They are not
+stamped in the checkpoint, so a RESUME does not report a change of them.
+`MANIFEST.md` § Code state has the measurements.
 
 ## Resuming across a changed configuration
 
@@ -180,7 +205,7 @@ adding a field never locks out an older checkpoint.
 ## Flag ↔ environment variable cross-reference
 
 Generated from the `KNOBS` and `GROUPS` tables in `src/run_prod.py` and the
-preset files (2026-11-20); the **meaning** column is the `--help` text. The
+preset files (2026-11-20; the perf switches added 2026-11-23); the **meaning** column is the `--help` text. The
 **launcher** column is `run_prod.py`'s run-control default; a dash means the
 launcher sets nothing and the module default (stated in the help text where it
 has one) stands. The **preset** column shows the value both presets set, or
@@ -203,6 +228,7 @@ has a column of its own.
 | `--frame3d` | `FRAME3D` | — | — | 1 = write the full 3-D state + per-cell size statistics + TOA fields after EVERY step to frames3d/step_<s>.npz (~480 MB/step, ~700 GB/yr) |
 | `--frame3d-every` | `FRAME3D_EVERY` | — | — | write frames3d only every N-th step (output-only; N coprime to 4 rotates the UTC hour) |
 | `--ckpt-every-frames` | `CKPT_EVERY_FRAMES` | — | — | write the state checkpoint every N frames (output cadence only) |
+| `--ckpt-async` | `CKPT_ASYNC` | — | — | perf: snapshot the _ckpt arrays to host and write them in a background thread (default 1 since 2026-11-23; 0 = synchronous writes, the old default) |
 | `--frame-levels` | `FRAME_LEVELS` | — | — | 'probe' (default) = one PROBE_HPA level; 'all' adds a zonal-mean frame at every level (+1.1 GB/yr) and unlocks the lat-height figures and gifs |
 | `--log-every` | `LOG_EVERY` | — | — | progress line every N coupling steps |
 | `--probe-hpa` | `PROBE_HPA` | — | — | diagnostic/frame level (default 50) |
@@ -237,6 +263,7 @@ has a column of its own.
 |---|---|---|---|---|
 | `--aer-src` | `AER_SRC` | — | — | IC/BC reservoir source (default mam4) |
 | `--init-bin` | `INIT_BIN` | — | `so4` | how MAM4 modes are binned onto TOMAS |
+| `--mam4-bin-device` | `MAM4_BIN_DEVICE` | — | — | perf: run bin_mode's erf part (INIT_BIN=so4) on the device as eager jax ops, no host round trip (default 1 since 2026-11-23; 0 = numpy, the old default) |
 | `--init-sigma` | `INIT_SIGMA` | — | — | override the log-normal mode width used for binning |
 | `--carma-file` | `CARMA_FILE` | — | — | CARMA reservoir file (AER_SRC=carma) |
 | `--carma-frame` | `CARMA_FRAME` | — | — | time index into the CARMA file |
@@ -293,6 +320,7 @@ has a column of its own.
 | flag | variable | launcher | `cesm_numerical` / `jcm_numerical` preset | meaning |
 |---|---|---|---|---|
 | `--micro-engine` | `MICRO_ENGINE` | — | — | which engine advances the run (default fast = tomas_jax.fast, tomas-jax gpu-fast; full = tomas-jax dev make_step, which needs a preset whose tomas-jax slot is a dev checkout) |
+| `--micro-wrap-device` | `MICRO_WRAP_DEVICE` | — | — | perf: MICRO_ENGINE=fast adapter (microphysics/tomas_fast.py) does its unit conversion, transposes, consistency clip and OH field on the device, no host round trip for num/mas (not bit-identical: device reductions/ordering give ~1e-12 rel diffs in a few cells, within run-to-run GPU noise; default 1 since 2026-11-23, not used under FAST_MULTIGPU on >1 device; 0 = numpy, the old default) |
 
 ### advection
 
@@ -318,6 +346,7 @@ has a column of its own.
 | `--adv-metric` | `ADV_METRIC` | — | — | cos(phi) area metric in the y-sweep |
 | `--adv-dxfix` | `ADV_DXFIX` | — | — | true grid spacing in the x-sweep |
 | `--adv-polar` | `ADV_POLAR` | — | — | polar cap treatment (zonal = stirred, mass-conserving) |
+| `--adv-sl-device-resample` | `ADV_SL_DEVICE_RESAMPLE` | — | — | perf: SL time-resample of the step winds on the device (same float32 formula, bit-identical; engages for float32 winds, prints ENGAGED/not engaged once; default 1 since 2026-11-23; 0 = numpy, the old default) |
 
 ### meteorology source and boundary climatology (set by the preset)
 
@@ -343,12 +372,18 @@ has a column of its own.
 |---|---|---|---|---|
 | `--co2-ppm` | `CO2_PPM` | — | — | background CO2 for RRTMGP |
 | `--n2o-ppb` | `N2O_PPB` | — | — | background N2O for RRTMGP |
-| `--rad-lat-chunk` | `RAD_LAT_CHUNK` | — | — | latitude rows per radiation chunk (GPU memory) |
+| `--rad-lat-chunk` | `RAD_LAT_CHUNK` | — | — | latitude rows per radiation chunk (GPU memory; default 96 for the chunk loop, 192 for the RAD_FAST path; an explicit value sets both) |
+| `--rad-fast` | `RAD_FAST` | — | — | perf: radiation fast path (one lat chunk, SW on sunlit columns only, g-point batching, exact minor-gas scan, no cloud optics; window_gq too). Default auto (since 2026-11-23): on where validated (1 GPU, wet optics, RAD_SOLAR=window_gq, the normal solve), else the chunk loop, decided per radiation driver and stated in the header; 1 = force (refuses anything else); 0 = the chunk loop (the old default) |
 | `--rad-engine` | `RAD_ENGINE` | — | — | which engine solves the EVOLVED radiation call (rrtmgp = the physics, the only one in this repo) |
 | `--rad-ref-cache` | `RAD_REF_CACHE` | — | — | per-archive-hour cache of the reference-aerosol solve and the clear-sky fields (default inputs/cache/rad_ref; bit-identical on a hit, computes+stores on a miss; 0 = off) |
 | `--rad-sample-every` | `RAD_SAMPLE_EVERY` | — | — | write rad_sample_<TAG>_s<step>.npz (evolved bins, dT_rad, hour) every N radiation steps -- training data for a radiation emulator (0 = off) |
 
 ### memory / performance (cannot change results)
+
+(The perf switches are listed in their stage's table: `CKPT_ASYNC` under run
+control, `MAM4_BIN_DEVICE` under aerosol source, `MICRO_WRAP_DEVICE` under the
+microphysics engine, `ADV_SL_DEVICE_RESAMPLE` under advection, `RAD_FAST` under
+radiation.)
 
 | flag | variable | launcher | `cesm_numerical` / `jcm_numerical` preset | meaning |
 |---|---|---|---|---|

@@ -167,6 +167,7 @@ KNOBS = [
                                                           "which engine advances the run (default fast = tomas_jax.fast, "
                                                           "tomas-jax gpu-fast; full = tomas-jax dev make_step, which needs a "
                                                           "preset whose tomas-jax slot is a dev checkout)"),
+ ("engine", "--micro-wrap-device", "MICRO_WRAP_DEVICE", None, "0|1", "perf: MICRO_ENGINE=fast adapter (microphysics/tomas_fast.py) does its unit conversion, transposes, consistency clip and OH field on the device, no host round trip for num/mas (not bit-identical: device reductions/ordering give ~1e-12 rel diffs in a few cells, within run-to-run GPU noise; default 1 since 2026-11-23, not used under FAST_MULTIGPU on >1 device; 0 = numpy, the old default)"),
  # ---- meteorology source ----
  ("met", "--met-src",      "MET_SRC",      None,   "cesm|file|jcm|jcm_online", "where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); jcm_online = the same fields and grid from the jcm-strat AL7h model integrated LIVE beside this one (src/met/jcm_server.py, a subprocess under --jcm-py on the same GPU; code from the jcm-strat slot), started from the --jcm-dir chain's 1 January checkpoint; file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src"),
  ("met", "--jcm-dir",      "JCM_DIR",      None,   "PATH", "MET_SRC=jcm|jcm_online: the jcm-strat run directory (default /data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70, the AL7h chain); read-only. jcm_online reads only its 1 January checkpoints, their last output frame and the template segment's output (for the grid)"),
@@ -212,8 +213,8 @@ KNOBS = [
  ("rad", "--rad-engine",   "RAD_ENGINE",   None,   "rrtmgp", "which engine solves the EVOLVED radiation call (rrtmgp = the physics, the only one in this repo)"),
  ("rad", "--rad-ref-cache", "RAD_REF_CACHE", None, "PATH|0", "per-archive-hour cache of the reference-aerosol solve and the clear-sky fields (default inputs/cache/rad_ref; bit-identical on a hit, computes+stores on a miss; 0 = off)"),
  ("rad", "--rad-sample-every", "RAD_SAMPLE_EVERY", None, "N", "write rad_sample_<TAG>_s<step>.npz (evolved bins, dT_rad, hour) every N radiation steps -- training data for a radiation emulator, not part of this repo (0 = off)"),
- ("perf", "--micro-wrap-device", "MICRO_WRAP_DEVICE", None, "0|1", "perf: MICRO_ENGINE=fast adapter (microphysics/tomas_fast.py) does its unit conversion, transposes, consistency clip and OH field on the device, no host round trip for num/mas (not bit-identical: device reductions/ordering give ~1e-12 rel diffs in a few cells, within run-to-run GPU noise; default 1 since 2026-11-23, not used under FAST_MULTIGPU on >1 device; 0 = numpy, the old default)"),
- # ---- memory / performance (numerically irrelevant) ----
+ # ---- memory / performance (numerically irrelevant; the perf switches that are
+ #      not bit-identical, e.g. MICRO_WRAP_DEVICE, live in their stage's group) ----
  ("perf", "--cell-chunk",  "CELL_CHUNK",   None,   "N",   "cells per microphysics vmap batch"),
  ("perf", "--tracer-chunk", "TRACER_CHUNK", None,  "N",   "tracers per advection batch (0 = all 82 at once)"),
  # ---- input data locations ----

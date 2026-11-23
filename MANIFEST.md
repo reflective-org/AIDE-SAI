@@ -56,7 +56,7 @@ hard-coded launcher presets that are visible only by diffing branches.
 |---|---|---|---|---|
 | `cesm_numerical` (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz` | the 2-year CESM runs `fast_2yr_inj6_30NS` / `fast_2yr_ctrl`, bit-identically with the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`; § Code state); with their defaults (on) within run-to-run GPU noise |
 | `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically with the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`); with their defaults (on) within run-to-run GPU noise |
-| `jcm_online_numerical` | jcm-strat AL7h **run live**, 6-hourly (`MET_SRC=jcm_online`; code from the `jcm-strat` slot, `models/jcm-strat` f3c2070; started from the same `JCM_DIR` chain) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19) — **statistically, not bitwise**: jcm-strat on GPU is not deterministic run to run (§ Code state) |
+| `jcm_online_numerical` | jcm-strat AL7h **run live**, 6-hourly (`MET_SRC=jcm_online`; code from the `jcm-strat` slot, `models/jcm-strat` f3c2070; started from the same `JCM_DIR` chain) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19) — **statistically, not bitwise**: jcm-strat on GPU is not deterministic run to run (§ Code state); that run had the perf switches at 0, and their defaults (on) are untested on this linking (`RAD_FAST` adds ~2 GB on the GPU jcm-strat shares) |
 
 All three also set `BC_SRC=clim`, `INIT_BIN=so4` and `ADV_VPOS=1`, and pin the
 same tomas-jax and jax-rrtmgp slots; `jcm_online_numerical` also pins
@@ -319,8 +319,11 @@ Set `FRAME_EVERY` to the run **length**, not 0: `FRAME_EVERY_STEPS` is
 suppresses the restart cycle; `coupled_final_<TAG>.npz` is still written
 unconditionally and is the bulk of the output.
 
-**Cost.** ~22–35 s per 6-h step on one H100, flat over a year (one year = 1460
-steps ≈ 9–14 h). A complete 1-year run measured on 2026-08-28
+**Cost.** ~22–35 s per 6-h step on one H100 with the perf switches off, flat
+over a year (one year = 1460 steps ≈ 9–14 h). With their defaults (on since
+2026-11-23, § Code state) the 48 h tests measured ~18 s/step (CESM, ≈ 7 h/yr)
+and ~12 s/step (JCM, ≈ 5 h/yr); a full year on the new defaults has not been
+timed yet. A complete 1-year run measured on 2026-08-28
 (`runs/prod1yr/`, then `lr` transport and the pre-cache radiation) was
 **34.9 s/step** — micro 16.5 s, radiation 9.4 s, advection 7.4 s, rest 1.7 s —
 with quarter means 35.8/34.1/35.5/34.2 s: burden growth does not make steps more
@@ -473,7 +476,8 @@ any directory. What they take from the cwd is the checkpoint they read
   Validated only over 48 h; the year-scale behaviour of the defaults is not
   yet tested.
   - `RAD_FAST` (default **auto**) — radiation fast path: one latitude chunk
-    (`RAD_LAT_CHUNK_FAST`, 192; an explicit `RAD_LAT_CHUNK` sets both), SW on
+    (192 rows, a module constant -- there is no `RAD_LAT_CHUNK_FAST` variable;
+    an explicit `RAD_LAT_CHUNK` sets both chunk sizes), SW on
     sunlit columns only, g-point batching (`rrtmgp_batched.py`), exact
     dynamic minor-gas scan, no cloud optics, window_gq through
     `_solve_fast_gq`. Bit-identical radiation on both presets; radiation
@@ -483,7 +487,8 @@ any directory. What they take from the cwd is the checkpoint they read
     default is not a plain 1 but **auto**, resolved per `RadiationDriver` at
     construction (device count, optics mode, solar mode, sub-knobs -- none of
     these is known at import): on where validated, otherwise off, and the
-    header says `RAD_FAST=auto -> 0|1 (reason)`. On an auto-on driver every
+    header says `RAD_FAST=auto -> 0|1 (reason)`; under `RAD_MODE=flux` (every
+    call split=True) it resolves 0. On an auto-on driver every
     call the fast path does not cover (split=True: RAD_MODE=flux, the
     reference-cache builder, the check harnesses; a one-solve solar mode set
     after construction; `_gq_full`) runs the chunk loop, i.e. the RAD_FAST=0
@@ -496,8 +501,9 @@ any directory. What they take from the cwd is the checkpoint they read
     an off call in a process that has them still runs the library's graph.
     `RAD_FAST=1` forces it and still **refuses** (SystemExit) anything
     outside the validated path; `RAD_FAST=0` is the chunk loop. Its
-    reference-cache key gains `rad_fast=1` on a driver where it resolved on,
-    so caches never mix -- which means a default run does NOT hit a reference
+    reference-cache key gains `rad_fast=1` where it would resolve on apart from
+    the device count (so a one-GPU builder and a multi-GPU run still share a
+    directory; the content is bit-identical either way) -- which means a default run does NOT hit a reference
     cache built before 2026-11-23 (it computes and stores on a miss; rebuild
     with `scripts/radiation/build_ref_cache.py`, which now resolves the same
     way), and a `RAD_FAST=0` run still hits the old one.
