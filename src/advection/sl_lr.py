@@ -137,13 +137,13 @@ ADV_SL_ITER = int(os.environ.get('ADV_SL_ITER', '2'))
 ADV_SL_RHO = os.environ.get('ADV_SL_RHO', '0') != '0'
 ADV_SL_SPLIT = os.environ.get('ADV_SL_SPLIT', 'strang').lower()
 ADV_SL_JAC = os.environ.get('ADV_SL_JAC', '1') != '0'
-# Opt-in (default 0 = the numpy path): resample the step's winds in time on the
+# Default 1 since 2026-11-23 (0 = the numpy path, the old default): resample the step's winds in time on the
 # device instead of on the host. Same float32 formula (1-a)*H[idx] + a*H[idx+1]
 # with the host-computed idx/a; the two products are materialised by one jit
 # and added by a second, so no fused multiply-add can change bits. Engages only
 # for float32 gathers on float32 ndarray winds and n != K+1 (the production
 # case); otherwise falls back to the numpy path. The first call prints which.
-ADV_SL_DEVICE_RESAMPLE = os.environ.get('ADV_SL_DEVICE_RESAMPLE', '0') != '0'
+ADV_SL_DEVICE_RESAMPLE = os.environ.get('ADV_SL_DEVICE_RESAMPLE', '1') != '0'
 _SPLITS = ('lie', 'strang')
 if ADV_SL_SPLIT not in _SPLITS:
     raise ValueError(f"ADV_SL_SPLIT={ADV_SL_SPLIT!r}; expected one of {_SPLITS}")
@@ -171,7 +171,8 @@ def describe():
                ", Lie H-V with the air mass carried (ADV_SL_SPLIT=lie ADV_SL_RHO=1)"
                if ADV_SL_RHO else
                ", Lie H-V with the air mass frozen at 1 (ADV_SL_SPLIT=lie ADV_SL_RHO=0)")
-            + (", device wind resample ADV_SL_DEVICE_RESAMPLE=1" if ADV_SL_DEVICE_RESAMPLE else ""))
+            + (", device wind resample ADV_SL_DEVICE_RESAMPLE=1" if ADV_SL_DEVICE_RESAMPLE
+               else ", host wind resample ADV_SL_DEVICE_RESAMPLE=0"))
 
 
 # ---- mass fixers (sums in float64) -------------------------------------------

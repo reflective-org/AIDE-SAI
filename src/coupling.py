@@ -865,7 +865,7 @@ STATE_CKPT = os.environ.get('STATE_CKPT', '1') != '0'
 # on /data NFS; six concurrent runs saturated it (write queue ~2.5 s/op) and the runs waited on it. A crash now loses
 # at most N frames. Default 1 = the previous behaviour.
 CKPT_EVERY_FRAMES = max(1, int(os.environ.get('CKPT_EVERY_FRAMES', '1')))
-# CKPT_ASYNC=1 (opt-in perf switch, default 0 = write the three _ckpt files synchronously, as before): snapshot
+# CKPT_ASYNC (perf switch, default 1 since 2026-11-23; 0 = write the three _ckpt files synchronously, the old default): snapshot
 # the checkpoint arrays to fresh host copies on the main thread, then do the np.savez work (zip + disk, ~0.9 GB
 # state + the growing frames history per write) in ONE background writer thread while the next steps run.
 # Output-only: the state the model evolves is never touched by the writer, and each file holds exactly what the
@@ -874,7 +874,7 @@ CKPT_EVERY_FRAMES = max(1, int(os.environ.get('CKPT_EVERY_FRAMES', '1')))
 # atomically via savez_atomic) and before the final coupled_* files; a writer error is re-raised on the main
 # thread at that join. The thread is non-daemon, so an exception elsewhere still lets an in-flight write finish
 # before the interpreter exits. Cost: one extra host copy of the 3-D state per checkpoint (memcpy, not disk).
-CKPT_ASYNC = os.environ.get('CKPT_ASYNC', '0') != '0'
+CKPT_ASYNC = os.environ.get('CKPT_ASYNC', '1') != '0'
 RESUME     = os.environ.get('RESUME', '0') != '0'
 LOG_EVERY  = int(os.environ.get('LOG_EVERY', '1'))    # progress line every N steps
 FRAME_EVERY = int(os.environ.get('FRAME_EVERY', '24'))  # save size-bin snapshot every N hours
@@ -949,12 +949,12 @@ else:
 # INIT_BIN=dgnum explicitly there (it is already out of distribution, so this
 # is not the binding problem).
 _INIT_BIN = os.environ.get('INIT_BIN', 'so4').lower()
-# MAM4_BIN_DEVICE=1 (opt-in perf switch, default 0 = the numpy path): bin_mode's
+# MAM4_BIN_DEVICE (perf switch, default 1 since 2026-11-23; 0 = the numpy path, the old default): bin_mode's
 # (41, cells) erf part runs on the device as separate eager jax ops -- the same
 # operations in the same order, so it should give the same bits -- instead of a
 # numpy array sent to the GPU for erf alone and back (2 x ~430 MB round trip at
 # full grid). Used every step by the open-BC slabs and the polar refresh.
-MAM4_BIN_DEVICE = os.environ.get('MAM4_BIN_DEVICE', '0') != '0'
+MAM4_BIN_DEVICE = os.environ.get('MAM4_BIN_DEVICE', '1') != '0'
 N_HOURS   = int(os.environ.get('N_HOURS', 24 * N_DAYS))   # override for smoke tests
 
 # Aerosol IC / boundary-fill source: 'mam4' (default) bins CESM MAM4 modes onto

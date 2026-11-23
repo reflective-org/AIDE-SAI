@@ -59,8 +59,8 @@ FAST_SORT      = os.environ.get('FAST_SORT', '1') != '0'        # stiffness-sort
 # stride D (cell i -> GPU i % D), which spreads the plume over every GPU. Added
 # 2026-11-05 for the 1997 restart campaign; default off = the single-GPU path.
 FAST_MULTIGPU  = os.environ.get('FAST_MULTIGPU', '0') != '0'
-# MICRO_WRAP_DEVICE=1 (opt-in perf switch, default 0 = the numpy wrapper, as
-# before): do this adapter's own work -- mixing ratio <-> per-box conversion,
+# MICRO_WRAP_DEVICE (perf switch, default 1 since 2026-11-23; 0 = the numpy
+# wrapper, the old default): do this adapter's own work -- mixing ratio <-> per-box conversion,
 # (nbin,cell) transposes, the two-moment consistency clip, the FastState build and
 # the OH (inner step, cell) field -- as eager jax ops on the device, so num/mas
 # (and the outputs) no longer make a device -> host -> device round trip and the
@@ -72,7 +72,7 @@ FAST_MULTIGPU  = os.environ.get('FAST_MULTIGPU', '0') != '0'
 # differ in < 100 of 3.5e7-5.3e7 cells at <= 6e-13 pointwise (6e-21 normwise);
 # budget closure lines identical; micro -2.6 s/step on both presets.
 # FAST_MULTIGPU over >1 device keeps the numpy path.
-MICRO_WRAP_DEVICE = os.environ.get('MICRO_WRAP_DEVICE', '0') != '0'
+MICRO_WRAP_DEVICE = os.environ.get('MICRO_WRAP_DEVICE', '1') != '0'
 
 # number of inner fast steps that fill one coupling step (6 h / FAST_DT)
 N_FAST_STEPS = int(round(C.DT_MICRO / FAST_DT))

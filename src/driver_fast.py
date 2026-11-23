@@ -191,7 +191,7 @@ def _wrap_desc():
     # MICRO_WRAP_DEVICE=1 is not used under FAST_MULTIGPU on >1 device (the
     # numpy wrapper runs); say so, so the header names the path that runs.
     if MICRO_WRAP_DEVICE and FAST_MULTIGPU and _n_devices() > 1:
-        return "1 (inactive: FAST_MULTIGPU on >1 device, numpy wrapper)"
+        return "1 -> 0 (FAST_MULTIGPU on >1 device: the numpy wrapper runs)"
     return str(int(MICRO_WRAP_DEVICE))
 
 

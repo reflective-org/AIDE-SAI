@@ -53,6 +53,7 @@ for _env, _name in (('TOMAS_JAX_PATH', 'tomas-jax'), ('RRTMGP_PATH', 'jax-rrtmgp
                 sys.path.insert(0, _cand)
             break
 
+import copy
 import functools
 import dataclasses
 import hashlib
@@ -99,11 +100,27 @@ TSI_DEFAULT = 1361.0           # W/m2; per-step irradiance override possible
 # BIT-IDENTICAL (columns independent). Default 96; drop to 48 if radiation OOMs on
 # a memory-tight card (per-band fields are ~3GB/globe, so fewer/bigger chunks cost
 # more memory -- 96=2 chunks ~1.5GB each, 48=4 chunks ~0.75GB each).
-# RAD_FAST=1 (opt-in perf switch, default 0; see the RAD_FAST block below) makes
-# the default 192 = the whole globe in one chunk: the solve is launch-bound, so
-# every extra chunk costs ~0.45 s; peak device memory 8.4 GB vs 6.6 GB at 96.
-RAD_FAST = os.environ.get('RAD_FAST', '0') != '0'
-RAD_LAT_CHUNK = int(os.environ.get('RAD_LAT_CHUNK', '192' if RAD_FAST else '96'))
+# The RAD_FAST path (see the RAD_FAST block below) takes its own default of
+# 192 = the whole globe in one chunk: the solve is launch-bound, so every extra
+# chunk costs ~0.45 s; peak device memory 8.4 GB vs 6.6 GB at 96. An explicit
+# RAD_LAT_CHUNK sets both. RAD_LAT_CHUNK is the chunk loop's, RAD_LAT_CHUNK_FAST
+# the fast path's; which one a driver uses is decided per driver (RAD_FAST=auto).
+#
+# RAD_FAST (perf switch; 2026-11-23 default auto, was 0):
+#   unset/auto  ON where validated -- decided per RadiationDriver at construction
+#               (one visible GPU, wet optics, RAD_SOLAR=window_gq, sub-knobs at 1),
+#               otherwise OFF; on an ON driver every call the fast path does not
+#               cover (split=True, a one-solve solar mode, _gq_full) runs the
+#               chunk loop, i.e. exactly the RAD_FAST=0 path. The header says
+#               "RAD_FAST=auto -> 0|1 (reason)".
+#   1           forced: SystemExit outside the validated path (as before).
+#   0           off: the chunk loop, bit-identical to every run before the switch.
+_RAD_FAST_ENV = os.environ.get('RAD_FAST', 'auto').strip().lower()
+RAD_FAST_MODE = 'auto' if _RAD_FAST_ENV in ('', 'auto') else ('off' if _RAD_FAST_ENV == '0' else 'on')
+RAD_FAST = RAD_FAST_MODE != 'off'     # requested (auto or 1); the driver resolves it (self.fast)
+_RAD_LAT_CHUNK_ENV = os.environ.get('RAD_LAT_CHUNK')
+RAD_LAT_CHUNK = int(_RAD_LAT_CHUNK_ENV or '96')
+RAD_LAT_CHUNK_FAST = int(_RAD_LAT_CHUNK_ENV or '192')
 # Size the optics on the WET H2SO4/H2O droplet rather than the dry SO4 core.
 # ON by default as of 2026-08-03; 0 reproduces the legacy dry-diameter optics.
 WET_OPTICS = os.environ.get('WET_OPTICS', '1') != '0'
@@ -659,11 +676,12 @@ def solar_window(time_val, lat_deg, lon_deg, width_h, offset_h=0.0, mu='sunlit',
 
 
 # =========================================================================
-# RAD_FAST: the radiation fast path (opt-in perf switch, default 0 = the chunk
-# loop above, unchanged). Ported by hand from AIDE-SAI-link 9d693d2 (rad agent,
-# 2026-11-13) and ab74f46 (window_gq fast path, 2026-11-17). Under RAD_FAST=1
-# on ONE device with wet optics, heating() runs:
-#   * one LW solve per lat chunk (RAD_LAT_CHUNK defaults to 192 = one chunk),
+# RAD_FAST: the radiation fast path (perf switch; default auto since 2026-11-23,
+# see RAD_FAST_MODE above; 0 = the chunk loop, unchanged). Ported by hand from
+# AIDE-SAI-link 9d693d2 (rad agent, 2026-11-13) and ab74f46 (window_gq fast path,
+# 2026-11-17). On a driver where it is on (ONE device, wet optics, window_gq),
+# heating()'s window_gq anomaly solve runs:
+#   * one LW solve per lat chunk (RAD_LAT_CHUNK_FAST defaults to 192 = one chunk),
 #   * the SW solve on the sunlit columns only (compacted, padded to RAD_SW_PAD),
 #     once per Gauss node under RAD_SOLAR=window_gq (RAD_GQ_FAST), combined under
 #     jit exactly as _hr_multi_impl does,
@@ -673,8 +691,27 @@ def solar_window(time_val, lat_deg, lon_deg, width_h, offset_h=0.0, mu='sunlit',
 #     the lower/upper minor tables on their own levels only (RAD_SPLIT_TROPO;
 #     needs level-only, monotone column pressure -- asserted at trace time),
 #   * no cloud optics (RAD_SKIP_CLOUD; clear sky, zero-cloud combine kept for SW).
-# The sub-knobs default to 1 under RAD_FAST=1 and are inert under RAD_FAST=0.
-# Multi-GPU and dry optics keep the chunk loop.
+# The sub-knobs default to 1 unless RAD_FAST=0 and are inert on a driver where
+# RAD_FAST resolved off. Multi-GPU and dry optics keep the chunk loop.
+#
+# What is decided when (RAD_FAST=auto):
+#   import       the env vars only (RAD_FAST_MODE, the sub-knobs, RAD_LAT_CHUNK*).
+#                Nothing is patched or imported here any more.
+#   construction RadiationDriver.__init__ resolves self.fast from the visible
+#                device count, the optics mode (WET_OPTICS and mmid_kg) and the
+#                driver's solar mode; only if it is on does it import
+#                rrtmgp_batched, install its minor-gas patches (once per process,
+#                _install_fast_patches) and build the cloud-skipping optics
+#                (_skip_clouds on a shallow copy of the optics library, so
+#                self.rt stays the unpatched RAD_FAST=0 instance).
+#   each call    _heating takes the fast path only for the window_gq anomaly
+#                solve; any other call on a fast driver runs the chunk loop (auto)
+#                or exits (RAD_FAST=1).
+# A driver that resolves off therefore runs with nothing installed: the
+# RAD_FAST=0 code path. (The patches are also inert outside rrtmgp_batched's
+# dyn_ctx -- the wrapped lax.scan / minor_scan_length / compute_minor_optical_depth
+# pass straight through when _CTX['on'] is unset -- so an off call in a process
+# where another driver turned them on still runs the library's own graph.)
 # =========================================================================
 def _fast_knob(name, default='1'):
     return RAD_FAST and os.environ.get(name, default) != '0'
@@ -688,20 +725,39 @@ RAD_SW_MAXCOLS = int(os.environ.get('RAD_SW_MAXCOLS', '1000000'))
 RAD_SW_SKIP_NIGHT = _fast_knob('RAD_SW_SKIP_NIGHT')
 RAD_SKIP_CLOUD = _fast_knob('RAD_SKIP_CLOUD')
 RAD_GQ_FAST = _fast_knob('RAD_GQ_FAST')     # window_gq through the fast path; 0 = the chunk loop
-if RAD_FAST:
-    import rrtmgp_batched                    # src/radiation/, via _paths
+rrtmgp_batched = None                       # imported by _install_fast_patches
+_FAST_PATCHED = False
+
+
+def _install_fast_patches():
+    """Import rrtmgp_batched and install its minor-gas patches, once per process,
+    the first time a driver resolves RAD_FAST on (was: at import under RAD_FAST=1)."""
+    global rrtmgp_batched, _FAST_PATCHED
+    if _FAST_PATCHED:
+        return
+    import rrtmgp_batched as _rb             # src/radiation/, via _paths
+    rrtmgp_batched = _rb
     if RAD_DYN_MINOR:
         rrtmgp_batched.install_dynamic_minor_scan(split_tropo=RAD_SPLIT_TROPO)
+    _FAST_PATCHED = True
 
 
-def rad_fast_summary():
-    """One line for the run header."""
-    if not RAD_FAST:
-        return "RAD_FAST=0 (radiation chunk loop, library g-point loop)"
-    return (f"RAD_FAST=1 (RAD_LAT_CHUNK={RAD_LAT_CHUNK} RAD_GBATCH={RAD_GBATCH} "
+def rad_fast_summary(fast=None, why=()):
+    """One line for the run header. fast = the driver's resolved RAD_FAST
+    (None: what the environment asks for); why = the reasons it is off."""
+    fast = RAD_FAST if fast is None else fast
+    tag = 'RAD_FAST=auto -> ' if RAD_FAST_MODE == 'auto' else 'RAD_FAST='
+    if not fast:
+        reason = '; '.join(why)               # empty under RAD_FAST=0
+        return (f"{tag}0 ({reason + ': ' if reason else ''}"
+                f"radiation chunk loop, RAD_LAT_CHUNK={RAD_LAT_CHUNK}, library g-point loop)")
+    return (f"{tag}1 (RAD_LAT_CHUNK={RAD_LAT_CHUNK_FAST} RAD_GBATCH={RAD_GBATCH} "
             f"RAD_DYN_MINOR={int(RAD_DYN_MINOR)} RAD_SPLIT_TROPO={int(RAD_SPLIT_TROPO)} "
             f"RAD_SKIP_CLOUD={int(RAD_SKIP_CLOUD)} RAD_SW_SKIP_NIGHT={int(RAD_SW_SKIP_NIGHT)} "
-            f"RAD_GQ_FAST={int(RAD_GQ_FAST)} RAD_SW_PAD={RAD_SW_PAD})")
+            f"RAD_GQ_FAST={int(RAD_GQ_FAST)} RAD_SW_PAD={RAD_SW_PAD}"
+            + ("; calls other than the window_gq solve (split=True, one-solve solar modes) "
+               "run the chunk loop, RAD_LAT_CHUNK=" + str(RAD_LAT_CHUNK)
+               if RAD_FAST_MODE == 'auto' else "") + ")")
 
 
 def _no_mark(name, *arrs):
@@ -713,7 +769,7 @@ def c_shape(a, ncol):
     return (a.shape[0], a.shape[1], ncol)
 
 
-def _skip_clouds(rt):
+def _skip_clouds(lib):
     """RAD_SKIP_CLOUD: this driver is clear-sky -- cloud paths are exactly zero -- but
     jax-rrtmgp is handed zero-valued cloud arrays (not None), so for every one of the 128 LW + 112 SW
     g-points it runs the cloud-optics table lookups and mass-weighted combine of an all-zero cloud.
@@ -724,7 +780,6 @@ def _skip_clouds(rt):
           bitwise ssa -- skipping it would change the last bit of ssa."""
     if not RAD_SKIP_CLOUD:
         return
-    lib = rt.optics_lib
     lw0, sw0 = lib.compute_lw_optical_properties, lib.compute_sw_optical_properties
 
     def lw(pressure, temperature, molecules, igpt, vmr_fields=None, cloud_r_eff_liq=None,
@@ -853,8 +908,7 @@ class RadiationDriver:
                     RRTMGP_TESTDATA, 'rcemip_vmr_sounding.csv'),
             ))
         # dz only feeds cloud paths; we are clear-sky, so any scalar works (for LWP/IWP calcs).
-        self.rt = rrtmgp_lib.RRTMGP(cfg, dz=500.0)
-        _skip_clouds(self.rt)                  # RAD_FAST only (no-op otherwise)
+        self.rt = rrtmgp_lib.RRTMGP(cfg, dz=500.0)   # never patched: the chunk loop's
         self.cfg = cfg
         self.g_lw, self.g_sw = g_lw, g_sw
         # A second RRTMGP instance that ALSO returns the SW/LW split of the
@@ -908,12 +962,39 @@ class RadiationDriver:
                   "underestimates extinction ~47%; set WET_OPTICS=1)", flush=True)
 
         self._jit_hr = jax.jit(self._hr_impl)
+        # ---- RAD_FAST: resolved here, per driver (see the RAD_FAST block) ----
+        # RAD_FAST is validated (bit-identical to RAD_FAST=0, 2026-11-23) only
+        # where its fast path engages: single GPU, wet optics, window_gq through
+        # _solve_fast_gq. RAD_FAST=1 refuses the rest instead of running an
+        # untested mix (the chunk loop under the cloud-skip patches, or
+        # _solve_fast); auto turns itself off there.
+        self.fast, self.fast_why = False, []
         if RAD_FAST:
+            nd = len(jax.devices())
+            self.fast_why = [w for c, w in [
+                (nd != 1, f'{nd} GPUs (needs 1)'),
+                (not self.wet_optics, 'dry optics (needs WET_OPTICS=1)'),
+                (self.solar_mode != 'window_gq', f'RAD_SOLAR={self.solar_mode} (needs window_gq)'),
+                (not (RAD_SW_SKIP_NIGHT and RAD_SKIP_CLOUD and RAD_GQ_FAST),
+                 'RAD_SW_SKIP_NIGHT/RAD_SKIP_CLOUD/RAD_GQ_FAST must stay 1')] if c]
+            if self.fast_why and RAD_FAST_MODE == 'on':
+                raise SystemExit('radiation: RAD_FAST=1 is validated only for one GPU, wet optics and '
+                                 'RAD_SOLAR=window_gq; here: ' + '; '.join(self.fast_why)
+                                 + '. Use RAD_FAST=0 (or leave RAD_FAST unset: auto).')
+            self.fast = not self.fast_why
+        self._fallback_said = set()
+        if self.fast:
+            _install_fast_patches()
+            # the fast path's own optics library: a shallow copy of self.rt's
+            # (same tables, no reload) with the cloud branch dropped; self.rt
+            # itself stays unpatched for the chunk loop
+            self._fast_lib = copy.copy(self.rt.optics_lib)
+            _skip_clouds(self._fast_lib)
             # (nz+2,) column pressures, for RAD_SPLIT_TROPO's static lower/upper split
             self._pcol = np.asarray(self._p_xyz(1, 1))[0, 0] if RAD_DYN_MINOR else None
             self._jit_lw = jax.jit(self._lw_impl)
             self._jit_sw = jax.jit(self._sw_impl)
-        print("  " + rad_fast_summary(), flush=True)
+        print("  " + rad_fast_summary(self.fast, self.fast_why), flush=True)
         # window_gq: one LW + N SW solves per chunk (see _hr_multi_impl); split=True
         # for the label writer / reference-cache builder
         self._jit_hr_multi = jax.jit(self._hr_multi_impl, static_argnames=('split',))
@@ -928,20 +1009,6 @@ class RadiationDriver:
         # JAX automatically on first use per device.
         self.devices = jax.devices()
         self.ndev = len(self.devices)
-        if RAD_FAST:
-            # RAD_FAST is validated (bit-identical to RAD_FAST=0, 2026-11-23) only
-            # where its fast path engages: single GPU, wet optics, window_gq through
-            # _solve_fast_gq. Refuse the rest instead of running an untested mix
-            # (the chunk loop under the cloud-skip patches, or _solve_fast).
-            why = [w for c, w in [
-                (self.ndev != 1, f'{self.ndev} GPUs (needs 1)'),
-                (not self.wet_optics, 'dry optics (needs WET_OPTICS=1)'),
-                (self.solar_mode != 'window_gq', f'RAD_SOLAR={self.solar_mode} (needs window_gq)'),
-                (not (RAD_SW_SKIP_NIGHT and RAD_SKIP_CLOUD and RAD_GQ_FAST),
-                 'RAD_SW_SKIP_NIGHT/RAD_SKIP_CLOUD/RAD_GQ_FAST must stay 1')] if c]
-            if why:
-                raise SystemExit('radiation: RAD_FAST=1 is validated only for one GPU, wet optics and '
-                                 'RAD_SOLAR=window_gq; here: ' + '; '.join(why) + '. Use RAD_FAST=0.')
         self._mie_sw_dev = [jax.device_put(self.mie_sw, d) for d in self.devices]
         self._mie_lw_dev = [jax.device_put(self.mie_lw, d) for d in self.devices]
         self._dp_band_dev = [jax.device_put(jnp.asarray(self.dp_band), d)
@@ -1133,27 +1200,27 @@ class RadiationDriver:
 
     def _lw_impl(self, T, q, o3, ch4, ts, aer_lw, p):
         from rrtmgp.rte import two_stream
-        rt = self.rt
+        rt, lib = self.rt, self._fast_lib
         Tf, vmr, mol = self._front(T, q, o3, ch4, p)
         state = dataclasses.replace(rt.atmospheric_state, sfc_emis=SFC_EMIS)
         aer = {'optical_depth': aer_lw[0], 'ssa': aer_lw[1], 'asymmetry_factor': aer_lw[2]}
         if RAD_GBATCH > 1:
-            lw = rrtmgp_batched.solve_lw(p, Tf, mol, rt.optics_lib, state, vmr, ts, aer, RAD_GBATCH, RAD_DYN_MINOR, self._pcol)
+            lw = rrtmgp_batched.solve_lw(p, Tf, mol, lib, state, vmr, ts, aer, RAD_GBATCH, RAD_DYN_MINOR, self._pcol)
         else:
-            lw = two_stream.solve_lw(p, Tf, mol, rt.optics_lib, state, vmr, ts, aerosol_optics=aer)
+            lw = two_stream.solve_lw(p, Tf, mol, lib, state, vmr, ts, aerosol_optics=aer)
         hr = two_stream.compute_heating_rate(lw['flux_net'], p)
         return hr, lw['flux_up'][..., -1], lw['flux_down'][..., 1]
 
     def _sw_impl(self, T, q, o3, ch4, alb, zen, aer_sw, p, irr):
         from rrtmgp.rte import two_stream
-        rt = self.rt
+        rt, lib = self.rt, self._fast_lib
         Tf, vmr, mol = self._front(T, q, o3, ch4, p)
         state = dataclasses.replace(rt.atmospheric_state, zenith=zen, irrad=irr, sfc_alb=alb, sfc_emis=SFC_EMIS)
         aer = {'optical_depth': aer_sw[0], 'ssa': aer_sw[1], 'asymmetry_factor': aer_sw[2]}
         if RAD_GBATCH > 1:
-            sw = rrtmgp_batched.solve_sw(p, Tf, mol, rt.optics_lib, state, vmr, aer, RAD_GBATCH, RAD_DYN_MINOR, self._pcol)
+            sw = rrtmgp_batched.solve_sw(p, Tf, mol, lib, state, vmr, aer, RAD_GBATCH, RAD_DYN_MINOR, self._pcol)
         else:
-            sw = two_stream.solve_sw(p, Tf, mol, rt.optics_lib, state, vmr, aerosol_optics=aer)
+            sw = two_stream.solve_sw(p, Tf, mol, lib, state, vmr, aerosol_optics=aer)
         hr = two_stream.compute_heating_rate(sw['flux_net'], p)
         return hr, sw['flux_down'][..., -1], sw['flux_up'][..., -1], sw['flux_down'][..., 1]
 
@@ -1275,7 +1342,7 @@ class RadiationDriver:
         """Aerosol optics + LW per lat chunk; returns (hr_lw, olr, lwd, aod550, ctx for _fast_sw)."""
         nlat, nlon = self.nlat, self.nlon
         ncol = nlat * nlon
-        C = RAD_LAT_CHUNK
+        C = RAD_LAT_CHUNK_FAST
         nchunk = int(np.ceil(nlat / C)); C = int(np.ceil(nlat / nchunk))
         dp_d, mie_sw, mie_lw, sig = (self._dp_band_dev[0], self._mie_sw_dev[0], self._mie_lw_dev[0],
                                      self._sig550_dev[0])
@@ -1347,7 +1414,6 @@ class RadiationDriver:
             import dataclasses
             cfg = dataclasses.replace(self.cfg, save_lw_sw_heating_rates=True)
             self._rt_split = rrtmgp_lib.RRTMGP(cfg, dz=500.0)
-            _skip_clouds(self._rt_split)           # RAD_FAST only (no-op otherwise)
             self._jit_hr_split = jax.jit(functools.partial(self._hr_impl, split=True))
 
     def heating(self, t, num_band, T_band_override=None, split=False, T_optics_band=None):
@@ -1394,10 +1460,19 @@ class RadiationDriver:
         geoms = [geom, ...] (window_gq), one LW and len(geoms) SW solves."""
         if num_band is None:
             num_band = jnp.zeros((self.nbins, self.nzb, self.nlat, self.nlon))
-        if RAD_FAST and (split or geoms is None):
-            raise SystemExit('radiation: RAD_FAST=1 supports only the window_gq anomaly solve '
-                             '(no split=True: RAD_MODE=flux, the cache builder, the check '
-                             'harnesses; no RAD_SOLAR full-solve test mode). Use RAD_FAST=0.')
+        use_fast = self.fast and not (split or geoms is None)
+        if self.fast and not use_fast:
+            if RAD_FAST_MODE == 'on':
+                raise SystemExit('radiation: RAD_FAST=1 supports only the window_gq anomaly solve '
+                                 '(no split=True: RAD_MODE=flux, the cache builder, the check '
+                                 'harnesses; no RAD_SOLAR full-solve test mode). Use RAD_FAST=0 '
+                                 '(or leave RAD_FAST unset: auto).')
+            # auto: this call runs the chunk loop below, i.e. the RAD_FAST=0 path
+            # (self.rt unpatched, RAD_LAT_CHUNK); say so once per kind of call
+            why = 'split=True' if split else f'one-solve call (RAD_SOLAR={self.solar_mode})'
+            if why not in self._fallback_said:
+                self._fallback_said.add(why)
+                print(f"  RAD_FAST=auto: {why} -> chunk loop (the RAD_FAST=0 path)", flush=True)
         if split:
             self._ensure_split()
         T = self._read3d(self.dT, 'T', t).astype(np.float64)
@@ -1440,7 +1515,7 @@ class RadiationDriver:
         if self.wet_optics:
             T_opt = T[self.band_pos] if T_optics_band is None else np.asarray(T_optics_band, np.float64)
             wwt_all = wt_weights(self._wt_field(T_opt, q[self.band_pos]))
-        fast = (RAD_FAST and RAD_SW_SKIP_NIGHT and RAD_SKIP_CLOUD and self.ndev == 1
+        fast = (use_fast and RAD_SW_SKIP_NIGHT and RAD_SKIP_CLOUD and self.ndev == 1
                 and self.wet_optics and (geoms is None or RAD_GQ_FAST))
         _mk = _no_mark
         if fast and geoms is not None:
@@ -1628,6 +1703,6 @@ class RadiationDriver:
                 key['solar']['nodes'] = self.nodes
                 if self.align != 'centred':     # only here, so the centred caches' keys are unchanged
                     key['solar']['align'] = self.align
-        if RAD_FAST:      # only then, so every RAD_FAST=0 cache key is unchanged
+        if self.fast:     # only then, so every RAD_FAST=0 cache key is unchanged
             key['rad_fast'] = 1
         return key
