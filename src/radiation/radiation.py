@@ -928,6 +928,20 @@ class RadiationDriver:
         # JAX automatically on first use per device.
         self.devices = jax.devices()
         self.ndev = len(self.devices)
+        if RAD_FAST:
+            # RAD_FAST is validated (bit-identical to RAD_FAST=0, 2026-11-23) only
+            # where its fast path engages: single GPU, wet optics, window_gq through
+            # _solve_fast_gq. Refuse the rest instead of running an untested mix
+            # (the chunk loop under the cloud-skip patches, or _solve_fast).
+            why = [w for c, w in [
+                (self.ndev != 1, f'{self.ndev} GPUs (needs 1)'),
+                (not self.wet_optics, 'dry optics (needs WET_OPTICS=1)'),
+                (self.solar_mode != 'window_gq', f'RAD_SOLAR={self.solar_mode} (needs window_gq)'),
+                (not (RAD_SW_SKIP_NIGHT and RAD_SKIP_CLOUD and RAD_GQ_FAST),
+                 'RAD_SW_SKIP_NIGHT/RAD_SKIP_CLOUD/RAD_GQ_FAST must stay 1')] if c]
+            if why:
+                raise SystemExit('radiation: RAD_FAST=1 is validated only for one GPU, wet optics and '
+                                 'RAD_SOLAR=window_gq; here: ' + '; '.join(why) + '. Use RAD_FAST=0.')
         self._mie_sw_dev = [jax.device_put(self.mie_sw, d) for d in self.devices]
         self._mie_lw_dev = [jax.device_put(self.mie_lw, d) for d in self.devices]
         self._dp_band_dev = [jax.device_put(jnp.asarray(self.dp_band), d)
@@ -1380,6 +1394,10 @@ class RadiationDriver:
         geoms = [geom, ...] (window_gq), one LW and len(geoms) SW solves."""
         if num_band is None:
             num_band = jnp.zeros((self.nbins, self.nzb, self.nlat, self.nlon))
+        if RAD_FAST and (split or geoms is None):
+            raise SystemExit('radiation: RAD_FAST=1 supports only the window_gq anomaly solve '
+                             '(no split=True: RAD_MODE=flux, the cache builder, the check '
+                             'harnesses; no RAD_SOLAR full-solve test mode). Use RAD_FAST=0.')
         if split:
             self._ensure_split()
         T = self._read3d(self.dT, 'T', t).astype(np.float64)
@@ -1610,4 +1628,6 @@ class RadiationDriver:
                 key['solar']['nodes'] = self.nodes
                 if self.align != 'centred':     # only here, so the centred caches' keys are unchanged
                     key['solar']['align'] = self.align
+        if RAD_FAST:      # only then, so every RAD_FAST=0 cache key is unchanged
+            key['rad_fast'] = 1
         return key

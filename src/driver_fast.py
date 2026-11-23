@@ -137,7 +137,8 @@ C.PHYS_CFG[list(C.PHYS_CFG_KEYS).index('MICRO_ENGINE=full')] = float(
     C.MICRO_MODE == 'full' and MICRO_ENGINE == 'full')
 if 'fast' in _need:
     from tomas_fast import (run_microphysics_full_fast, N_FAST_STEPS, FAST_DT,
-                            FAST_CELL_CAP, FAST_SORT, MICRO_WRAP_DEVICE)
+                            FAST_CELL_CAP, FAST_SORT, MICRO_WRAP_DEVICE,
+                            FAST_MULTIGPU, _n_devices)
     _ENGINE_FN['fast'] = run_microphysics_full_fast
 # OH sampling: the SZA parabola is evaluated at C.OH_SUBSTEPS (default 60)
 # substep centres per step; MICRO=full holds each sample over its dev steps.
@@ -186,11 +187,19 @@ _micro_fn = _ENGINE_FN[MICRO_ENGINE]
 C.run_microphysics_full = _micro_fn
 
 
+def _wrap_desc():
+    # MICRO_WRAP_DEVICE=1 is not used under FAST_MULTIGPU on >1 device (the
+    # numpy wrapper runs); say so, so the header names the path that runs.
+    if MICRO_WRAP_DEVICE and FAST_MULTIGPU and _n_devices() > 1:
+        return "1 (inactive: FAST_MULTIGPU on >1 device, numpy wrapper)"
+    return str(int(MICRO_WRAP_DEVICE))
+
+
 def _describe(engine):
     if engine == 'fast':
         return (f"tomas_jax.fast.run_fast  ({N_FAST_STEPS} steps x {FAST_DT:.0f}s, "
                 f"cap {FAST_CELL_CAP} cells/chunk, sort={FAST_SORT}, "
-                f"MICRO_WRAP_DEVICE={int(MICRO_WRAP_DEVICE)})")
+                f"MICRO_WRAP_DEVICE={_wrap_desc()})")
     return _describe_dev_chain()
 
 
