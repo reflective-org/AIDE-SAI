@@ -455,6 +455,54 @@ any directory. What they take from the cwd is the checkpoint they read
 
 ## Code state — why the defaults are what they are
 
+- **Opt-in performance switches (2026-11-23, all default 0).** Each is read
+  once at import with `os.environ.get`, echoed in the run header and listed in
+  `run_prod.py`'s KNOBS; no preset sets any of them, so a bare preset run is
+  bit-identical to the runs before they existed (checked 48 h, both presets).
+  They default off because they were validated only in a 48 h injected
+  window (CESM and JCM numerical presets, `RAD_REF_CACHE=0`), and some change
+  the last bits of a few cells. Test record: `runs/perf_speedups/README.md`
+  on branch `perf/numerical-speedups`.
+  - `RAD_FAST=1` — radiation fast path: one latitude chunk (`RAD_LAT_CHUNK`
+    defaults to 192 under it), SW on sunlit columns only, g-point batching
+    (`rrtmgp_batched.py`), exact dynamic minor-gas scan, no cloud optics,
+    window_gq through `_solve_fast_gq`. Bit-identical radiation on both
+    presets; radiation 12.2 -> 6.0 s/step (CESM), 7.9 -> 4.0 (JCM), compile
+    step 117 -> 52 s / 243 -> 74 s. **Refuses** (SystemExit) anything it was
+    not validated for: >1 GPU, dry optics, RAD_SOLAR other than window_gq,
+    split=True solves (RAD_MODE=flux, the cache builder, check harnesses).
+    Its reference-cache key gains `rad_fast=1`, so caches never mix. Off
+    because it monkeypatches `jax.lax.scan` and gas-optics process-wide and
+    uses ~2 GB more device memory.
+  - `MICRO_WRAP_DEVICE=1` — the tomas_jax.fast adapter (unit conversion,
+    transposes, clip, OH field) on the device. micro ~2.7 s/step faster.
+    **Not bit-identical**: clip-sum diagnostics differ at ~1e-15 and a few
+    dozen final cells at <= 2.5e-12 rel. Ignored under FAST_MULTIGPU on >1 device.
+  - `MAM4_BIN_DEVICE=1` — bin_mode's erf part (INIT_BIN=so4) as eager jax ops.
+    <= 9e-14 rel in a few final cells. Saves ~1.4-2.4 s/step only with
+    `RAD_REF_CACHE=0`; with a warm reference cache (the default) only
+    ~0.1-0.3 s/step (bc+polar). Not in the cache key (bits match).
+  - `ADV_SL_DEVICE_RESAMPLE=1` — sl_lr's float32 wind time resample on the
+    device (separate jits, no FMA). Bit-identical on vs off; advect
+    0.9 -> 0.45 s/step (CESM), 0.6 -> 0.3 (JCM). Prints ENGAGED/not engaged
+    on its first call.
+  - `CKPT_ASYNC=1` — `_ckpt` files snapshotted to host and written by a
+    background thread (joined before the next checkpoint and at the end).
+    Identical files; takes 1.6-2.6 s per checkpoint off the main thread,
+    more late in a year. Costs one extra host copy of the state plus the
+    frames stack in RAM while a write is in flight (untested over a year).
+  - `RAD_LAT_CHUNK=192` (existing knob, CESM only): bit-identical radiation,
+    gain within timing noise; subsumed by `RAD_FAST`.
+  - All five together (48 h): CESM step wall 30 -> 18 s, JCM 20 -> 12 s; max
+    rel diff vs base 8.5e-14 (CESM final mas), all timeseries/frames identical
+    except the clip sums (<= 1e-15), budget closure unchanged.
+  - Known, not caused by any switch: the final num/mas of a CESM run differ
+    run to run at <= 2.5e-12 in a few columns (GPU nondeterminism in the
+    microphysics), and a RESUME does not reproduce an uninterrupted run
+    (observed in the perf tests, `ckr*_` runs: Nburden ~3e-4 rel after the
+    first resumed step, with or without CKPT_ASYNC; likely some carried
+    advection state is not in the checkpoint) -- not yet investigated.
+
 - **The live JCM linking (2026-11-20; `configs/jcm_online_numerical.env`,
   `MET_SRC=jcm_online`; the code dates from 2026-11-18).** `MET_SRC=jcm_online`
   serves exactly what `MET_SRC=jcm` serves, on the same grid, but from jcm-strat
