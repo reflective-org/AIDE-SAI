@@ -161,12 +161,30 @@ KNOBS = [
  ("chem", "--oh-substeps", "OH_SUBSTEPS",  None,   "N",   "OH samples per coupling step"),
  ("chem", "--n-coag-substeps", "N_COAG_SUBSTEPS", None, "N", "forward-Euler coag substeps (legacy MICRO=coag path)"),
  # ---- microphysics engine selection ----
- ("engine", "--micro-engine", "MICRO_ENGINE", None, "fast|full",
+ ("engine", "--micro-engine", "MICRO_ENGINE", None, "fast|full|emulator",
                                                           "which engine advances the run (default fast = tomas_jax.fast, "
                                                           "tomas-jax gpu-fast; full = tomas-jax dev make_step, which needs a "
-                                                          "preset whose tomas-jax slot is a dev checkout)"),
+                                                          "preset whose tomas-jax slot is a dev checkout; emulator = the TOMAS "
+                                                          "emulator, microphysics/tomas_emulator.py: the cs_b student network on "
+                                                          "every cell + tomas_jax.fast on the top --emu-phys-top cells by sulfur)"),
+ ("engine", "--emu-student", "EMU_STUDENT", None, "PATH", "MICRO_ENGINE=emulator: the student network checkpoint (cs_b final.pt)"),
+ ("engine", "--emu-ckpt",   "EMU_CKPT",     None,   "PATH", "MICRO_ENGINE=emulator: the teacher (growth) checkpoint the adapter loads alongside the student (main_g03 stage_K24.pt)"),
+ ("engine", "--emu-norm",   "EMU_NORM",     None,   "PATH", "MICRO_ENGINE=emulator: state/forcing normalisation of the networks (foundation_mlp180 norm_stats.npz)"),
+ ("engine", "--emu-phys-top", "EMU_PHYS_TOP", None, "FRAC", "MICRO_ENGINE=emulator: fraction of cells, highest sulfur first, run with tomas_jax.fast instead of the network (module default 0.01; emulated presets 0.003)"),
+ ("engine", "--emu-phys-num", "EMU_PHYS_NUM", None, "FRAC", "MICRO_ENGINE=emulator: extra physics cells chosen by number (module default 0.04; emulated presets 0)"),
+ ("engine", "--emu-phys-exact", "EMU_PHYS_EXACT", None, "0|1", "MICRO_ENGINE=emulator: padding rows of the physics batch run 0 coagulation sub-steps; bit-identical, ~20 % faster physics (emulated presets 1)"),
+ ("engine", "--emu-lostfix", "EMU_LOSTFIX", None,  "0|1", "MICRO_ENGINE=emulator: return sulfur the network loses below the bin grid to the smallest bin (emulated presets 1)"),
+ ("engine", "--emu-sdpa",   "EMU_SDPA",     None,   "0|1", "MICRO_ENGINE=emulator: fused-qkv scaled-dot-product attention in the student (emulated presets 1)"),
+ ("engine", "--emu-triage-fine", "EMU_TRIAGE_FINE", None, "X", "MICRO_ENGINE=emulator: triage threshold, fine-mode fraction (emulated presets 0.3)"),
+ ("engine", "--emu-triage-pot", "EMU_TRIAGE_POT", None, "X", "MICRO_ENGINE=emulator: triage threshold, nucleation potential (emulated presets 0.1)"),
+ ("engine", "--emu-triage-n", "EMU_TRIAGE_N", None,  "N",   "MICRO_ENGINE=emulator: triage cell cap (emulated presets 1000)"),
+ ("engine", "--emu-triage", "EMU_TRIAGE",   None,   "0|1", "MICRO_ENGINE=emulator: 1 (module default) = 'quiet' cells get an analytic step with their number held fixed (no coagulation); 0 = the network everywhere. The frozen number compounds into a +10-25 % number excess at 20-60 hPa in a CESM-met control by day 30"),
+ ("engine", "--emu-online-corr", "EMU_ONLINE_CORR", None, "FRAC", "MICRO_ENGINE=emulator: run the physics on a random FRAC of the network cells each step and correct the network's per-(level, latitude band, bin) bias with the moving-average physics/network ratio (0 = off)"),
+ ("engine", "--emu-phys-ptop", "EMU_PHYS_PTOP", None,  "hPa", "MICRO_ENGINE=emulator: every cell above this pressure goes to the physics (class UPPER; 0 = off). The network is unreliable above ~10 hPa"),
+ ("engine", "--emu-phys-chunks", "EMU_PHYS_CHUNKS", None, "N", "MICRO_ENGINE=emulator: run the routed physics cells in N chunks sorted by coagulation cost (module default 1; emulated presets 4)"),
+ ("engine", "--sm-attn",    "SM_ATTN",      None,   "sdpa|tri|manual", "MICRO_ENGINE=emulator: student attention kernel. sdpa (default) = cuDNN; tri = packed block-diagonal Triton kernel, forward 0.43 -> 0.26 s, NOT bit-identical (2e-4 of attention outputs 1 ulp off; 10 d: N burden <= 0.002 %)"),
  # ---- meteorology source ----
- ("met", "--met-src",      "MET_SRC",      None,   "cesm|file|jcm|jcm_online", "where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); jcm_online = the same fields and grid from the jcm-strat AL7h model integrated LIVE beside this one (src/met/jcm_server.py, a subprocess under --jcm-py on the same GPU; code from the jcm-strat slot), started from the --jcm-dir chain's 1 January checkpoint; file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src"),
+ ("met", "--met-src",      "MET_SRC",      None,   "cesm|file|jcm|jcm_online|emu", "where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); jcm_online = the same fields and grid from the jcm-strat AL7h model integrated LIVE beside this one (src/met/jcm_server.py, a subprocess under --jcm-py on the same GPU; code from the jcm-strat slot), started from the --jcm-dir chain's 1 January checkpoint; file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src"),
  ("met", "--jcm-dir",      "JCM_DIR",      None,   "PATH", "MET_SRC=jcm|jcm_online: the jcm-strat run directory (default /data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70, the AL7h chain); read-only. jcm_online reads only its 1 January checkpoints, their last output frame and the template segment's output (for the grid)"),
  ("met", "--jcm-template", "JCM_TEMPLATE", None,   "PATH", "MET_SRC=jcm_online: the resolved Hydra config the live JCM is built from (default <jcm-dir>/<chain>_19960101/.hydra/config.yaml); start time, QBO year and init file are set per year"),
  ("met", "--jcm-py",       "JCM_PY",       None,   "PATH", "MET_SRC=jcm_online: the interpreter the JCM server runs under, a Python 3.11 venv with jcm-strat's dependencies (JAX 0.10; default <JCM_STRAT_PATH>/.venv/bin/python). Machine-specific: a submodule checkout has no venv. jcm_strat and jcm themselves are imported from the slot, not from this venv"),
@@ -176,6 +194,9 @@ KNOBS = [
  ("met", "--jcm-work",     "JCM_WORK",     None,   "DIR",  "MET_SRC=jcm_online: where the live JCM writes its year-end checkpoints (default jcm_online/ in the run directory; a RESUME restarts from them)"),
  ("met", "--met-q",        "MET_Q",        None,   "bc|met", "MET_SRC=jcm|jcm_online: water vapour from the BC source (bc, default: the regridded CESM climatology -- jcm-strat is dry and its q is a passive constant) or from JCM (met)"),
  ("met", "--met-dir",      "MET_DIR",      None,   "PATH", "MET_SRC=file: directory holding u/v/omega/T.npy + meta.json"),
+ ("met", "--atm-bundle",   "ATM_BUNDLE",   None,   "PATH", "MET_SRC=emu: the JCM-emulator bundle (P2@200: net.pt, norm, the IC, fixer terms, the CESM grid) stepped IN THE LOOP by src/met/met_emu.py; its IC fixes H0 (P2s200: 1997-01-01T06 = --h0 8766)"),
+ ("met", "--atm-seed",     "ATM_SEED",     None,   "N",    "MET_SRC=emu: the emulator's noise seed (generator seed 1000 + N; default 0 = the AIDE-SAI-link met set's first year)"),
+ ("met", "--atm-feedback", "ATM_FEEDBACK", None,   "0|1",  "MET_SRC=emu: 1 = hand the anomaly radiation's aerosol heating back to the atmosphere (Q x 6 h added to its T after each step); 0 (default) = one-way, as every other linking"),
  ("met", "--met-rh",       "MET_RH",       None,   "liq|q|cesm", "RH seen by settling, the microphysics' water uptake (full chain) and the FRAME3D wet diagnostics, recomputed every step from Q, T and p: liq (default) = over liquid water, Tabazadeh 1997 eq. 1. The radiation's wet optics ignore MET_RH and always compute liquid RH from Q themselves; q = over ice (the old MET_SRC=file default; 1.6-1.9x liq in the band); cesm = the archive's RELHUM as is"),
  ("met", "--bc-src",       "BC_SRC",       None,   "cesm|clim", "where every non-wind boundary field comes from (set by the preset): clim = the monthly climatology in CLIM_FILE (scripts/met/make_bc_climatology.py); cesm (module default) = the hourly archive"),
  ("met", "--clim-file",    "CLIM_FILE",    None,   "PATH", "BC_SRC=clim: the climatology, on the MODEL grid (set by the preset; the jcm_numerical preset uses the CESM climatology regridded onto the JCM grid by scripts/met/regrid_clim_to_grid.py)"),
@@ -205,7 +226,10 @@ KNOBS = [
  ("rad", "--n2o-ppb",      "N2O_PPB",      None,   "ppb", "background N2O for RRTMGP"),
  ("rad", "--rad-lat-chunk", "RAD_LAT_CHUNK", None, "N",   "latitude rows per radiation chunk (GPU memory)"),
  # ---- radiation engine / reference cache (docs/RADIATION.md) ----
- ("rad", "--rad-engine",   "RAD_ENGINE",   None,   "rrtmgp", "which engine solves the EVOLVED radiation call (rrtmgp = the physics, the only one in this repo)"),
+ ("rad", "--rad-engine",   "RAD_ENGINE",   None,   "rrtmgp|radem", "which engine solves the radiation (rrtmgp = the physics; radem = the window_gq aerosol-increment emulator, f09 only, RAD_MODE=anomaly: SW + LW increment nets and the Planck-damping net, no RRTMGP call)"),
+ ("rad", "--radem-ckpt",   "RADEM_CKPT",   None,   "DIR",  "RAD_ENGINE=radem: directory with sw.npz lw.npz pl.npz (gen2: /data/tomas-jax-output/radem_gen2_20261119)"),
+ ("rad", "--radem-mufeat", "RADEM_MUFEAT", None,   "0|1",  "RAD_ENGINE=radem: log(mu) and 1/(mu+0.02) SW inputs; gen2 needs 1"),
+ ("rad", "--rad-ref-interp-h", "RAD_REF_INTERP_H", None, "H", "RAD_ENGINE=radem: re-bin the MAM4 reference aerosol every H hours and interpolate between (0 = every step; emulated presets 24, 0.001 % rms)"),
  ("rad", "--rad-ref-cache", "RAD_REF_CACHE", None, "PATH|0", "per-archive-hour cache of the reference-aerosol solve and the clear-sky fields (default inputs/cache/rad_ref; bit-identical on a hit, computes+stores on a miss; 0 = off)"),
  ("rad", "--rad-sample-every", "RAD_SAMPLE_EVERY", None, "N", "write rad_sample_<TAG>_s<step>.npz (evolved bins, dT_rad, hour) every N radiation steps -- training data for a radiation emulator, not part of this repo (0 = off)"),
  # ---- memory / performance (numerically irrelevant) ----

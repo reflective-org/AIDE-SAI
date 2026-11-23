@@ -371,18 +371,31 @@ reason for it, is in **[MANIFEST.md](./MANIFEST.md), the canonical reference
 for this tree**. Where `docs/` disagrees with it, MANIFEST is current. The full
 knob reference is [docs/CONFIGURATION.md](./docs/CONFIGURATION.md).
 
+## Emulated linkings (2026-11-23)
+
+Three presets put emulators in the slots (docs/EMULATED_LINKING.md has the design, the A/B
+benchmarks and what each change to the linked_emulator settings fixed):
+
+- `cesm_met_emulated`: CESM meteorology, the TOMAS emulator (`MICRO_ENGINE=emulator`) and the radem
+  radiation emulator (`RAD_ENGINE=radem`, gen3 f09). It differs from `cesm_numerical` only in the two
+  engines, so it is the attribution arm.
+- `cesm_emulated`: as above with the JCM emulator P2@200 stepped **in the loop** as the meteorology
+  (`MET_SRC=emu`, `src/met/met_emu.py`; run with `--h0 8766`, the bundle's one IC).
+- `jcm_met_emulated`: the TOMAS emulator on the JCM grid (`jcm_numerical`'s meteorology).
+
+Transport and settling stay numerical. Weights are outside the repo (absolute paths in the presets,
+sha256 in the doc); torch, torch-harmonics and tree-math are needed (requirements.txt).
+
 ## Not part of this repo (yet)
 
-This repository holds the three numerical linkings. These are not part of it:
+These are not part of it:
 
-- the TOMAS microphysics emulator (`MICRO_ENGINE=emulator`), the engine A/B
-  (`MICRO_REF`) and the training samplers;
-- the radiation emulator (`RAD_ENGINE=emulator`);
+- the engine A/B harness (`MICRO_REF`) and the emulator training samplers (`MICRO_SAMPLE_EVERY`);
+- the older column-network radiation emulator (`RAD_ENGINE=emulator`; `RAD_ENGINE=radem` is);
 - the MAM4-JAX driver and its submodule;
-- the `MET_SRC=file` converters;
 - the `linking_plots` site and the operator studies.
 
-Selecting one of these engines exits with a message that it is not part of
+Selecting one of these exits with a message that it is not part of
 this repo. A component comes into this repository when it fills a slot behind an existing
 selector and comes with a preset that uses it.
 

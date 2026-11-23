@@ -49,6 +49,15 @@ scipy>=1.15
 diffrax>=0.6
 dataclasses-json>=0.6
 
+# --- emulated linkings only (MICRO_ENGINE=emulator, MET_SRC=emu) --------------
+# The TOMAS emulator and the in-loop JCM-emulator atmosphere are torch; the atmosphere's
+# fixer uses torch-harmonics and tree-math (its Hines drag is JAX). Versions the emulated
+# runs used (2026-11-23): torch 2.10.0+cu128, torch-harmonics 0.9.1, triton 3.6.0
+# (SM_ATTN=tri), tree-math 0.2.1. Not needed by the numerical presets.
+torch>=2.10
+torch-harmonics>=0.9
+tree-math>=0.2
+
 # --- analysis/plotting only (plot_run.py, gif_run.py) ---------------------
 # Not needed to run the model. cartopy pulls in GEOS/PROJ system libraries; skip
 # these two if you only want the .npz output.

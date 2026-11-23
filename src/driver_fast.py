@@ -116,11 +116,15 @@ from fct_fast import advect_step_batch as _fast_advect
 #             (models/tomas-jax = gpu-fast 787c991), sulfate + water, 40 bins.
 #   full      coupling.run_microphysics_full: tomas-jax dev's make_step. Needs
 #             a dev checkout of models/tomas-jax; not usable on this pin.
+#   emulator  (2026-11-23, emulated linking) the TOMAS emulator: the cs_b student
+#             network (EMU_STUDENT, a PackTF transformer over the 40 bins) advances
+#             every cell one 6 h step in ONE forward pass, and tomas_jax.fast runs
+#             on the top EMU_PHYS_TOP fraction of cells by sulfur (the plume cores
+#             the network was not trusted with). microphysics/tomas_emulator.py;
+#             model code vendored in microphysics/tomas_emulator_code/. Needs torch.
 MICRO_ENGINE = os.environ.get('MICRO_ENGINE', 'fast').lower()
-_ENGINES = ('fast', 'full')
+_ENGINES = ('fast', 'full', 'emulator')
 _ELSEWHERE = "it is not part of this repo"
-if MICRO_ENGINE == 'emulator':
-    sys.exit(f"driver_fast: MICRO_ENGINE=emulator -- {_ELSEWHERE}")
 if MICRO_ENGINE not in _ENGINES:
     sys.exit(f"driver_fast: MICRO_ENGINE must be one of {_ENGINES}; got {MICRO_ENGINE!r}")
 for _k in ('MICRO_REF', 'MICRO_SAMPLE_EVERY'):
@@ -139,6 +143,9 @@ if 'fast' in _need:
     from tomas_fast import (run_microphysics_full_fast, N_FAST_STEPS, FAST_DT,
                             FAST_CELL_CAP, FAST_SORT)
     _ENGINE_FN['fast'] = run_microphysics_full_fast
+if 'emulator' in _need:
+    import tomas_emulator
+    _ENGINE_FN['emulator'] = tomas_emulator.run_microphysics_full_emulator
 # OH sampling: the SZA parabola is evaluated at C.OH_SUBSTEPS (default 60)
 # substep centres per step; MICRO=full holds each sample over its dev steps.
 
@@ -190,6 +197,8 @@ def _describe(engine):
     if engine == 'fast':
         return (f"tomas_jax.fast.run_fast  ({N_FAST_STEPS} steps x {FAST_DT:.0f}s, "
                 f"cap {FAST_CELL_CAP} cells/chunk, sort={FAST_SORT})")
+    if engine == 'emulator':
+        return tomas_emulator.describe()
     return _describe_dev_chain()
 
 
@@ -201,7 +210,8 @@ if MICRO_ENGINE != 'full':
 
 print("=" * 60, flush=True)
 _ENGINE_TITLE = {'fast': 'tomas_jax.fast (GPU-fast reduced model)',
-                 'full': 'tomas-jax dev make_step (coupling.py MICRO=full)'}
+                 'full': 'tomas-jax dev make_step (coupling.py MICRO=full)',
+                 'emulator': 'TOMAS EMULATOR (cs_b student + tomas_jax.fast on the top cells)'}
 print(f"COUPLING: {_ENGINE_TITLE[MICRO_ENGINE]} + "
       f"{C.AER_SRC.upper()} IC/BC", flush=True)
 print(f"  micro    : {_describe(MICRO_ENGINE)}", flush=True)
