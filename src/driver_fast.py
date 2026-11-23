@@ -137,7 +137,7 @@ C.PHYS_CFG[list(C.PHYS_CFG_KEYS).index('MICRO_ENGINE=full')] = float(
     C.MICRO_MODE == 'full' and MICRO_ENGINE == 'full')
 if 'fast' in _need:
     from tomas_fast import (run_microphysics_full_fast, N_FAST_STEPS, FAST_DT,
-                            FAST_CELL_CAP, FAST_SORT)
+                            FAST_CELL_CAP, FAST_SORT, MICRO_WRAP_DEVICE)
     _ENGINE_FN['fast'] = run_microphysics_full_fast
 # OH sampling: the SZA parabola is evaluated at C.OH_SUBSTEPS (default 60)
 # substep centres per step; MICRO=full holds each sample over its dev steps.
@@ -189,7 +189,8 @@ C.run_microphysics_full = _micro_fn
 def _describe(engine):
     if engine == 'fast':
         return (f"tomas_jax.fast.run_fast  ({N_FAST_STEPS} steps x {FAST_DT:.0f}s, "
-                f"cap {FAST_CELL_CAP} cells/chunk, sort={FAST_SORT})")
+                f"cap {FAST_CELL_CAP} cells/chunk, sort={FAST_SORT}, "
+                f"MICRO_WRAP_DEVICE={int(MICRO_WRAP_DEVICE)})")
     return _describe_dev_chain()
 
 
