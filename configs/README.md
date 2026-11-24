@@ -187,7 +187,9 @@ has exports in it, `unset` them, or start a fresh shell.
    everything else to the module defaults, so a later change to a default
    reaches every preset that does not override it. Every preset must set
    `ADV_VPOS=1`, because without the vertical positivity limiter the number
-   field is not usable. A new implementation goes behind an existing selector
+   field is not usable. It should also set `FRAME3D=1 FRAME3D_EVERY=21`, like
+   the existing presets: without 3-D frames no time-mean map or column field
+   can be made from the run afterwards. A new implementation goes behind an existing selector
    (`MET_SRC`, `BC_SRC`, `AER_SRC`, `ADV_SCHEME`, `MICRO_ENGINE`,
    `RAD_ENGINE`) and is chosen here. It never goes on a branch. If the linking
    needs a machine-specific path (an interpreter, a data cache), make it a

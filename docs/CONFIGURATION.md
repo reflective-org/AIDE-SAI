@@ -24,8 +24,8 @@ command line. The linking is a preset file in `configs/`;
 
 | preset | sets | pins |
 |---|---|---|
-| `cesm_numerical` (default) | `MET_SRC=cesm`, `BC_SRC=clim`, `CLIM_FILE=inputs/bc_clim/bc_clim.npz`, `INIT_BIN=so4`, `ADV_VPOS=1` | tomas-jax `787c991` (gpu-fast), jax-rrtmgp `99d2d71` + `patches/jax-rrtmgp-zenith.patch` |
-| `jcm_numerical` | `MET_SRC=jcm`, `BC_SRC=clim`, `CLIM_FILE=inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded onto the JCM grid), `INIT_BIN=so4`, `ADV_VPOS=1` | the same two commits |
+| `cesm_numerical` (default) | `MET_SRC=cesm`, `BC_SRC=clim`, `CLIM_FILE=inputs/bc_clim/bc_clim.npz`, `INIT_BIN=so4`, `ADV_VPOS=1`, `FRAME3D=1`, `FRAME3D_EVERY=21` | tomas-jax `787c991` (gpu-fast), jax-rrtmgp `99d2d71` + `patches/jax-rrtmgp-zenith.patch` |
+| `jcm_numerical` | `MET_SRC=jcm`, `BC_SRC=clim`, `CLIM_FILE=inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded onto the JCM grid), `INIT_BIN=so4`, `ADV_VPOS=1`, `FRAME3D=1`, `FRAME3D_EVERY=21` | the same two commits |
 | `jcm_online_numerical` | as `jcm_numerical` but `MET_SRC=jcm_online` (jcm-strat run live in a subprocess), plus the machine paths `JCM_PY`, `JCM_CACHE`, `JCM_SCRATCH` (`/data/JCM_stripped/jcm-strat/...` on the development machine) | the same two commits, plus jcm-strat `f3c2070` (`models/jcm-strat`, with its nested `external/jax-gcm` `35dc199`) |
 
 `jcm_online_numerical` is **not bit-reproducible**: jcm-strat on GPU is not
