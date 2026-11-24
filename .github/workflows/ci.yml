@@ -73,6 +73,12 @@ jobs:
       - name: linking presets
         run: python scripts/validation/test_configs.py
 
+      # The yearly SO2 injection schedule (INJ_SO2_SCHED_FILE): the shipped
+      # file parses, the rate steps on the 365-day boundary and holds the last
+      # row, the checkpoint checksum tells schedules apart, bad files are refused.
+      - name: injection schedule
+        run: python scripts/validation/test_inj_schedule.py
+
   lint:
     name: lint
     runs-on: ubuntu-latest
