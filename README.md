@@ -118,7 +118,8 @@ All three linkings share the rest of the stack. Microphysics is `tomas_jax.fast`
 semi-Lagrangian, `sl` K=12. Radiation is RRTMGP + Mie (jax-rrtmgp 99d2d71 plus
 `patches/jax-rrtmgp-zenith.patch`), with `RAD_SOLAR=window_gq` at 3 nodes,
 trailing, `RAD_MODE=anomaly` and `RAD_T_FEEDBACK=0`. RH is computed over liquid
-(`MET_RH=liq`), with `INIT_BIN=so4` and `ADV_VPOS=1`. The JCM linkings take
+(`MET_RH=liq`), with `INIT_BIN=so4` and `ADV_VPOS=1`. Every preset also writes the
+full 3-D state every 21 steps (`FRAME3D=1 FRAME3D_EVERY=21`, output-only). The JCM linkings take
 water vapour from the climatology (`MET_Q=bc`, the default), because jcm-strat
 is dry. A dry run of each preset with its runs' scenario resolves to the knob
 values those run logs recorded.
@@ -292,7 +293,7 @@ Each run writes into its launch directory:
 | `coupled_frames_<TAG>.npz` | probe-level snapshots every `FRAME_EVERY` hours (24 by default) |
 | `coupled_timeseries_<TAG>.npz` | per-step scalar diagnostics (burdens, AOD550, ARF) and budget terms |
 | `coupled_state_<TAG>_ckpt.npz` | restart checkpoint, with `_frames_`/`_timeseries_` twins (`--resume 1` picks it up) |
-| `frames3d/step_<s>.npz` | only with `--frame3d 1`: full 3-D state per step (~480 MB each; thin with `--frame3d-every`) |
+| `frames3d/step_<s>.npz` | full 3-D state (~480 MB per file on f09). Every preset writes it every 21 steps (`FRAME3D=1 FRAME3D_EVERY=21`, ~33 GB/yr on f09); `--frame3d 0` turns it off |
 
 From the run directory:
 

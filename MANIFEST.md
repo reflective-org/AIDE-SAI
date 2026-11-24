@@ -58,7 +58,11 @@ hard-coded launcher presets that are visible only by diffing branches.
 | `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`); with the perf defaults (on) within run-to-run GPU noise; `ADV_SL_RHONORM=1` (default since PR #4, merged into dev 2026-11-24) is a real change, § sl_lr level air mass |
 | `jcm_online_numerical` | jcm-strat AL7h **run live**, 6-hourly (`MET_SRC=jcm_online`; code from the `jcm-strat` slot, `models/jcm-strat` f3c2070; started from the same `JCM_DIR` chain) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19) — **statistically, not bitwise**: jcm-strat on GPU is not deterministic run to run (§ Code state); that run had `ADV_SL_RHONORM=0` and the perf switches at 0, and their defaults (on) are untested on this linking (`RAD_FAST` adds ~2 GB on the GPU jcm-strat shares) |
 
-All three also set `BC_SRC=clim`, `INIT_BIN=so4` and `ADV_VPOS=1`, and pin the
+All three also set `BC_SRC=clim`, `INIT_BIN=so4`, `ADV_VPOS=1` and, since
+2026-11-24, `FRAME3D=1 FRAME3D_EVERY=21` (output-only: the full 3-D state every
+5.25 days, rotating through the four UTC hours, ~33 GB/yr on f09 and ~22 GB/yr on
+T63; the JCM runs above wrote none, and without 3-D frames no time-mean map or
+column field can be made afterwards), and pin the
 same tomas-jax and jax-rrtmgp slots; `jcm_online_numerical` also pins
 `jcm-strat` and sets three machine paths (`JCM_PY`, `JCM_CACHE`,
 `JCM_SCRATCH`). A dry run of each preset with those runs' scenario resolves the knob
