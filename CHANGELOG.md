@@ -6,8 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **sl_lr conserves each level's air mass (`ADV_SL_RHONORM=1`, new default).**
+  The per-level mass fixer was imprinting a drift from a level air mass that
+  the polar caps and the Jacobian did not conserve: uniform q drifted +2 % at
+  1.24 hPa in 10 days. Now within 1e-4. Bare runs are no longer bit-identical
+  to the 2-year runs; `ADV_SL_RHONORM=0` reproduces them. MANIFEST.md has the
+  numbers.
+- `test_configs.py` checks that each preset pins exactly the slots it needs,
+  and reads the gitlinks from the index (`git ls-files --stage`) instead of
+  `git ls-tree HEAD`; on a clean checkout and in CI the two are the same.
+- `cesm_numerical` and `jcm_numerical` are unchanged; their dry runs resolve
+  exactly as before. They reproduce their runs bit-identically with the
+  performance switches below off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`)
+  and `ADV_SL_RHONORM=0` (see above).
+- **The five performance switches are on by default** (`RAD_FAST`,
+  `MICRO_WRAP_DEVICE`, `MAM4_BIN_DEVICE`, `ADV_SL_DEVICE_RESAMPLE`,
+  `CKPT_ASYNC`; added opt-in at 0 on 2026-11-23). In 48 h injected runs on
+  both presets, each switch and all five together stayed within the
+  unmodified code's own run-to-run GPU noise (<= 2.5e-12 pointwise, budget
+  closure identical), for a step wall of 30 -> 18 s (CESM) and 20 -> 12 s
+  (JCM). `RAD_FAST` defaults to `auto`: on where it was validated (one GPU,
+  wet optics, `RAD_SOLAR=window_gq`, the normal solve), the RAD_FAST=0 chunk
+  loop everywhere else (multi-GPU, dry optics, other solar modes, split=True
+  calls from `RAD_MODE=flux`, the reference-cache builder and the check
+  harnesses), resolved per radiation driver and stated in the run header;
+  `RAD_FAST=1` still refuses anything outside the validated path. A default
+  run's reference-cache key gains `rad_fast=1`, so it does not hit caches
+  built before this change. Setting a switch to 0 runs exactly its old code
+  path; all five at 0 (plus `ADV_SL_RHONORM=0`) reproduces earlier runs bit for bit. See `MANIFEST.md`.
+
 ### Added
 
+- `ADV_SL_FIXLOG=1`: logs the level and column mass-fixer corrections per
+  sub-step (diagnostic, results unchanged), and
+  `scripts/validation/sl_fixer_cap_diag.py` / `sl_fixer_cap_summary.py`, the
+  uniform-tracer drift test on CESM winds.
 - **A third linking, `configs/jcm_online_numerical.env`: jcm-strat run live as
   the meteorology** (`MET_SRC=jcm_online`). The same fields and grid as
   `jcm_numerical`, but from the jcm-strat AL7h model integrating beside the
@@ -37,30 +72,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Earth 1:110m coastlines (public domain) under `inputs/assets/ne_110m/`. On
   the original runs they reproduce the earlier metrics exactly and the figures
   pixel for pixel.
-
-### Changed
-
-- `test_configs.py` checks that each preset pins exactly the slots it needs,
-  and reads the gitlinks from the index (`git ls-files --stage`) instead of
-  `git ls-tree HEAD`; on a clean checkout and in CI the two are the same.
-- `cesm_numerical` and `jcm_numerical` are unchanged; their dry runs resolve
-  exactly as before. They reproduce their runs bit-identically with the
-  performance switches below off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`).
-- **The five performance switches are on by default** (`RAD_FAST`,
-  `MICRO_WRAP_DEVICE`, `MAM4_BIN_DEVICE`, `ADV_SL_DEVICE_RESAMPLE`,
-  `CKPT_ASYNC`; added opt-in at 0 on 2026-11-23). In 48 h injected runs on
-  both presets, each switch and all five together stayed within the
-  unmodified code's own run-to-run GPU noise (<= 2.5e-12 pointwise, budget
-  closure identical), for a step wall of 30 -> 18 s (CESM) and 20 -> 12 s
-  (JCM). `RAD_FAST` defaults to `auto`: on where it was validated (one GPU,
-  wet optics, `RAD_SOLAR=window_gq`, the normal solve), the RAD_FAST=0 chunk
-  loop everywhere else (multi-GPU, dry optics, other solar modes, split=True
-  calls from `RAD_MODE=flux`, the reference-cache builder and the check
-  harnesses), resolved per radiation driver and stated in the run header;
-  `RAD_FAST=1` still refuses anything outside the validated path. A default
-  run's reference-cache key gains `rad_fast=1`, so it does not hit caches
-  built before this change. Setting a switch to 0 runs exactly its old code
-  path; all five at 0 reproduces earlier runs bit for bit. See `MANIFEST.md`.
 
 ## Initial release — 2026-11-20
 
