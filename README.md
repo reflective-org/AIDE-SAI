@@ -109,16 +109,17 @@ A change that makes a slot harder to swap needs saying so in its PR.
 
 | preset | meteorology | grid | climatology (`CLIM_FILE`) | provenance |
 |---|---|---|---|---|
-| [`cesm_numerical`](./configs/cesm_numerical.env) (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz`, monthly 1996–2014 CESM means | reproduces the 2-year runs `fast_2yr_inj6_30NS` and `fast_2yr_ctrl` (2026-11-18/19) bit-identically |
-| [`jcm_numerical`](./configs/jcm_numerical.env) | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`) | T63 Gaussian, 96 × 192, 47 levels 1.0–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz`, the same climatology regridded onto the JCM grid | reproduces the 2-year run `jcm_1yr_inj6_30NS` (2026-11-18..20) bit-identically |
-| [`jcm_online_numerical`](./configs/jcm_online_numerical.env) | jcm-strat AL7h **run live** beside the coupler, 6-hourly (`MET_SRC=jcm_online`; `models/jcm-strat` f3c2070) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19). **Not bit-reproducible**: jcm-strat on GPU is not deterministic run to run, so this linking is validated statistically (`scripts/validation/validate_jcm_online.py`), never bitwise |
+| [`cesm_numerical`](./configs/cesm_numerical.env) (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz`, monthly 1996–2014 CESM means | reproduces the 2-year runs `fast_2yr_inj6_30NS` and `fast_2yr_ctrl` (2026-11-18/19) bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`; the perf switches default on since 2026-11-23, within run-to-run GPU noise; `ADV_SL_RHONORM` defaults to 1 since PR #4 (dev, 2026-11-24), which removes a transport drift those runs carry, see `MANIFEST.md`) |
+| [`jcm_numerical`](./configs/jcm_numerical.env) | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`) | T63 Gaussian, 96 × 192, 47 levels 1.0–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz`, the same climatology regridded onto the JCM grid | reproduces the 2-year run `jcm_1yr_inj6_30NS` (2026-11-18..20) bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`) |
+| [`jcm_online_numerical`](./configs/jcm_online_numerical.env) | jcm-strat AL7h **run live** beside the coupler, 6-hourly (`MET_SRC=jcm_online`; `models/jcm-strat` f3c2070) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19). **Not bit-reproducible**: jcm-strat on GPU is not deterministic run to run, so this linking is validated statistically (`scripts/validation/validate_jcm_online.py`), never bitwise. That run had `ADV_SL_RHONORM=0` and the perf switches at 0; their defaults (on) are untested on this linking |
 
 All three linkings share the rest of the stack. Microphysics is `tomas_jax.fast`
 (`MICRO_ENGINE=fast`, tomas-jax `gpu-fast` 787c991). Transport is
 semi-Lagrangian, `sl` K=12. Radiation is RRTMGP + Mie (jax-rrtmgp 99d2d71 plus
 `patches/jax-rrtmgp-zenith.patch`), with `RAD_SOLAR=window_gq` at 3 nodes,
 trailing, `RAD_MODE=anomaly` and `RAD_T_FEEDBACK=0`. RH is computed over liquid
-(`MET_RH=liq`), with `INIT_BIN=so4` and `ADV_VPOS=1`. The JCM linkings take
+(`MET_RH=liq`), with `INIT_BIN=so4` and `ADV_VPOS=1`. Every preset also writes the
+full 3-D state every 21 steps (`FRAME3D=1 FRAME3D_EVERY=21`, output-only). The JCM linkings take
 water vapour from the climatology (`MET_Q=bc`, the default), because jcm-strat
 is dry. A dry run of each preset with its runs' scenario resolves to the knob
 values those run logs recorded.
@@ -292,7 +293,7 @@ Each run writes into its launch directory:
 | `coupled_frames_<TAG>.npz` | probe-level snapshots every `FRAME_EVERY` hours (24 by default) |
 | `coupled_timeseries_<TAG>.npz` | per-step scalar diagnostics (burdens, AOD550, ARF) and budget terms |
 | `coupled_state_<TAG>_ckpt.npz` | restart checkpoint, with `_frames_`/`_timeseries_` twins (`--resume 1` picks it up) |
-| `frames3d/step_<s>.npz` | only with `--frame3d 1`: full 3-D state per step (~480 MB each; thin with `--frame3d-every`) |
+| `frames3d/step_<s>.npz` | full 3-D state (~480 MB per file on f09). Every preset writes it every 21 steps (`FRAME3D=1 FRAME3D_EVERY=21`, ~33 GB/yr on f09); `--frame3d 0` turns it off |
 
 From the run directory:
 

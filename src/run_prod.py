@@ -97,6 +97,7 @@ KNOBS = [
  ("run", "--frame3d",      "FRAME3D",      None,   "0|1", "1 = write the full 3-D state + per-cell size statistics + TOA fields after EVERY step to frames3d/step_<s>.npz (~480 MB/step, ~700 GB/yr)"),
  ("run", "--frame3d-every", "FRAME3D_EVERY", None,  "N",   "write frames3d only every N-th step (output-only; N coprime to 4 rotates the UTC hour)"),
  ("run", "--ckpt-every-frames", "CKPT_EVERY_FRAMES", None, "N", "write the state checkpoint every N frames (output cadence only)"),
+ ("run", "--ckpt-async",   "CKPT_ASYNC",   None,   "0|1", "perf: snapshot the _ckpt arrays to host and write them in a background thread (default 1 since 2026-11-23; 0 = synchronous writes, the old default)"),
  ("run", "--frame-levels", "FRAME_LEVELS", None,   "probe|all",
                                                           "'probe' (default) = one PROBE_HPA level; 'all' adds a "
                                                           "zonal-mean frame at every level (+1.1 GB/yr) and unlocks "
@@ -122,6 +123,7 @@ KNOBS = [
  # ---- aerosol source / initial condition ----
  ("aer", "--aer-src",      "AER_SRC",      None,   "mam4|carma", "IC/BC reservoir source (default mam4)"),
  ("aer", "--init-bin",     "INIT_BIN",     None,  "so4|dgnum", "how MAM4 modes are binned onto TOMAS"),
+ ("aer", "--mam4-bin-device", "MAM4_BIN_DEVICE", None, "0|1", "perf: run bin_mode's erf part (INIT_BIN=so4) on the device as eager jax ops, no host round trip (default 1 since 2026-11-23; 0 = numpy, the old default)"),
  ("aer", "--init-sigma",   "INIT_SIGMA",   None,   "S",   "override the log-normal mode width used for binning"),
  ("aer", "--carma-file",   "CARMA_FILE",   None,   "PATH", "CARMA reservoir file (AER_SRC=carma)"),
  ("aer", "--carma-frame",  "CARMA_FRAME",  None,   "N",   "time index into the CARMA file"),
@@ -165,6 +167,7 @@ KNOBS = [
                                                           "which engine advances the run (default fast = tomas_jax.fast, "
                                                           "tomas-jax gpu-fast; full = tomas-jax dev make_step, which needs a "
                                                           "preset whose tomas-jax slot is a dev checkout)"),
+ ("engine", "--micro-wrap-device", "MICRO_WRAP_DEVICE", None, "0|1", "perf: MICRO_ENGINE=fast adapter (microphysics/tomas_fast.py) does its unit conversion, transposes, consistency clip and OH field on the device, no host round trip for num/mas (not bit-identical: device reductions/ordering give ~1e-12 rel diffs in a few cells, within run-to-run GPU noise; default 1 since 2026-11-23, not used under FAST_MULTIGPU on >1 device; 0 = numpy, the old default)"),
  # ---- meteorology source ----
  ("met", "--met-src",      "MET_SRC",      None,   "cesm|file|jcm|jcm_online", "where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); jcm_online = the same fields and grid from the jcm-strat AL7h model integrated LIVE beside this one (src/met/jcm_server.py, a subprocess under --jcm-py on the same GPU; code from the jcm-strat slot), started from the --jcm-dir chain's 1 January checkpoint; file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src"),
  ("met", "--jcm-dir",      "JCM_DIR",      None,   "PATH", "MET_SRC=jcm|jcm_online: the jcm-strat run directory (default /data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70, the AL7h chain); read-only. jcm_online reads only its 1 January checkpoints, their last output frame and the template segment's output (for the grid)"),
@@ -191,6 +194,9 @@ KNOBS = [
  ("adv", "--adv-sl-rho",   "ADV_SL_RHO",   None,   "0|1", "SL flux vertical, lie split only: carry the air mass 1 - dt div(v) through the horizontal step (strang always does; default 0)"),
  ("adv", "--adv-sl-split", "ADV_SL_SPLIT", None,   "lie|strang", "SL flux vertical: strang (default) = V/2 H V/2 with the air mass carried (second-order face flux); lie = H then V (first order at the open face)"),
  ("adv", "--adv-sl-jac",   "ADV_SL_JAC",   None,   "0|1", "SL flux vertical: 1 (default) = air mass from the Jacobian of the departure map and the bookkeeping remainder returned through the faces; 0 = Eulerian 1 - dt div(v) and the global column fixer"),
+ ("adv", "--adv-sl-rhonorm", "ADV_SL_RHONORM", None, "0|1", "SL: 1 (default since PR #4, merged into dev 2026-11-24) = rescale each level's air mass after the horizontal step so the level total is conserved, which stops the per-level fixer imprinting a drift (uniform q: +2%% at 1.24 hPa in 10 days -> 1e-4); 0 = every run made before PR #4 reached dev (2026-11-24), including the 2-year runs"),
+ ("adv", "--adv-sl-fixlog", "ADV_SL_FIXLOG", None,  "0|1", "SL diagnostic: 1 = log what the level and column mass fixers corrected every sub-step (results unchanged; default 0)"),
+ ("adv", "--adv-sl-device-resample", "ADV_SL_DEVICE_RESAMPLE", None, "0|1", "perf: SL time-resample of the step winds on the device (same float32 formula, bit-identical; engages for float32 winds, prints ENGAGED/not engaged once; default 1 since 2026-11-23; 0 = numpy, the old default)"),
  ("adv", "--adv-sl-vorder", "ADV_SL_VORDER", None, "linear|cubic", "SL: vertical gather order (default linear)"),
  ("adv", "--adv-cfl",      "ADV_CFL",      None,   "X",   "horizontal CFL target (production 0.5)"),
  ("adv", "--adv-passive",  "ADV_PASSIVE",  None,   "0|1", "TEST: advect ONE total-sulfate tracer (+ the two gases) and rescale every bin by the cell's mass ratio (frozen per-cell shape); score against the same run with 0"),
@@ -203,12 +209,14 @@ KNOBS = [
  # ---- radiation gases / chunking ----
  ("rad", "--co2-ppm",      "CO2_PPM",      None,   "ppm", "background CO2 for RRTMGP"),
  ("rad", "--n2o-ppb",      "N2O_PPB",      None,   "ppb", "background N2O for RRTMGP"),
- ("rad", "--rad-lat-chunk", "RAD_LAT_CHUNK", None, "N",   "latitude rows per radiation chunk (GPU memory)"),
+ ("rad", "--rad-lat-chunk", "RAD_LAT_CHUNK", None, "N",   "latitude rows per radiation chunk (GPU memory; default 96 for the chunk loop, 192 for the RAD_FAST path; an explicit value sets both)"),
+ ("rad", "--rad-fast",     "RAD_FAST",     None,   "auto|0|1", "perf: radiation fast path (one lat chunk, SW on sunlit columns only, g-point batching, exact minor-gas scan, no cloud optics; window_gq too). Default auto (since 2026-11-23): on where validated (1 GPU, wet optics, RAD_SOLAR=window_gq, the normal solve), else the chunk loop, decided per radiation driver and stated in the header; 1 = force (refuses anything else); 0 = the chunk loop (the old default)"),
  # ---- radiation engine / reference cache (docs/RADIATION.md) ----
  ("rad", "--rad-engine",   "RAD_ENGINE",   None,   "rrtmgp", "which engine solves the EVOLVED radiation call (rrtmgp = the physics, the only one in this repo)"),
  ("rad", "--rad-ref-cache", "RAD_REF_CACHE", None, "PATH|0", "per-archive-hour cache of the reference-aerosol solve and the clear-sky fields (default inputs/cache/rad_ref; bit-identical on a hit, computes+stores on a miss; 0 = off)"),
  ("rad", "--rad-sample-every", "RAD_SAMPLE_EVERY", None, "N", "write rad_sample_<TAG>_s<step>.npz (evolved bins, dT_rad, hour) every N radiation steps -- training data for a radiation emulator, not part of this repo (0 = off)"),
- # ---- memory / performance (numerically irrelevant) ----
+ # ---- memory / performance (numerically irrelevant; the perf switches that are
+ #      not bit-identical, e.g. MICRO_WRAP_DEVICE, live in their stage's group) ----
  ("perf", "--cell-chunk",  "CELL_CHUNK",   None,   "N",   "cells per microphysics vmap batch"),
  ("perf", "--tracer-chunk", "TRACER_CHUNK", None,  "N",   "tracers per advection batch (0 = all 82 at once)"),
  # ---- input data locations ----

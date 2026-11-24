@@ -59,6 +59,20 @@ FAST_SORT      = os.environ.get('FAST_SORT', '1') != '0'        # stiffness-sort
 # stride D (cell i -> GPU i % D), which spreads the plume over every GPU. Added
 # 2026-11-05 for the 1997 restart campaign; default off = the single-GPU path.
 FAST_MULTIGPU  = os.environ.get('FAST_MULTIGPU', '0') != '0'
+# MICRO_WRAP_DEVICE (perf switch, default 1 since 2026-11-23; 0 = the numpy
+# wrapper, the old default): do this adapter's own work -- mixing ratio <-> per-box conversion,
+# (nbin,cell) transposes, the two-moment consistency clip, the FastState build and
+# the OH (inner step, cell) field -- as eager jax ops on the device, so num/mas
+# (and the outputs) no longer make a device -> host -> device round trip and the
+# host stops transposing ~0.4 GB arrays every step. Same elementwise operations
+# in the same order (eager, one op per kernel: nothing is fused or contracted),
+# and the same dtype promotion. Measured 2026-11-23, 48 h injected runs vs the
+# numpy wrapper: every timeseries/frame array identical except clipM{add,rem}_cum
+# (device reductions vs numpy's pairwise sums, <= 8e-16 relative); final num/mas
+# differ in < 100 of 3.5e7-5.3e7 cells at <= 6e-13 pointwise (6e-21 normwise);
+# budget closure lines identical; micro -2.6 s/step on both presets.
+# FAST_MULTIGPU over >1 device keeps the numpy path.
+MICRO_WRAP_DEVICE = os.environ.get('MICRO_WRAP_DEVICE', '1') != '0'
 
 # number of inner fast steps that fill one coupling step (6 h / FAST_DT)
 N_FAST_STEPS = int(round(C.DT_MICRO / FAST_DT))
@@ -84,6 +98,10 @@ def run_microphysics_full_fast(num, mas, so2, h2so4, temp3d, pres3d, rh3d, oh3d,
     nbin, nlev, nlat, nlon = num.shape
     assert nbin == FAST_NBINS, f"expected {FAST_NBINS} bins, got {nbin}"
     ncell = nlev * nlat * nlon
+
+    if MICRO_WRAP_DEVICE and not (FAST_MULTIGPU and _n_devices() > 1):
+        return _run_fast_device(num, mas, so2, h2so4, temp3d, pres3d, rh3d,
+                                oh3d, wgt3d)
 
     rho = np.asarray(pres3d) / (C.RD * np.asarray(temp3d))      # kg/m3
     rho_f = rho.reshape(ncell)
@@ -175,6 +193,108 @@ def run_microphysics_full_fast(num, mas, so2, h2so4, temp3d, pres3d, rh3d, oh3d,
     return num2, mas2, so2_2, h2so4_2, clip_add, clip_rem
 
 
+
+
+def _n_devices():
+    import jax
+    return len(jax.devices())
+
+
+def _oh_device(oh_arr, ncell, nlev, nlat, nlon):
+    """The OH forcing for run_fast, built on the device (MICRO_WRAP_DEVICE=1).
+
+    Same values as the host path. oh_sza() returns a level-BROADCAST view
+    (nsub, nlev, nlat, nlon) with level stride 0: upload only the (nsub, nlat,
+    nlon) field and broadcast/reshape on the device -- the host path materializes
+    the full (nsub, ncell) array in numpy and uploads it. Any other shape goes
+    through coupling._oh_to_substeps exactly as the host path does.
+    """
+    import jax.numpy as jnp
+    if isinstance(oh_arr, np.ndarray) and oh_arr.ndim == 4:
+        if oh_arr.shape[0] == N_FAST_STEPS and oh_arr.strides[1] == 0:
+            base = jnp.asarray(np.ascontiguousarray(oh_arr[:, 0]))   # (nsub,nlat,nlon)
+            return jnp.broadcast_to(base[:, None], (N_FAST_STEPS, nlev, nlat, nlon)
+                                    ).reshape(N_FAST_STEPS, ncell)
+        return jnp.asarray(C._oh_to_substeps(oh_arr, ncell, nsub_out=N_FAST_STEPS).T)
+    if getattr(oh_arr, 'ndim', 0) == 4:          # a device array: same rules on host
+        oh_np = np.asarray(oh_arr)
+        return jnp.asarray(C._oh_to_substeps(oh_np, ncell, nsub_out=N_FAST_STEPS).T)
+    return jnp.asarray(oh_arr).reshape(ncell)
+
+
+def _run_fast_device(num, mas, so2, h2so4, temp3d, pres3d, rh3d, oh3d, wgt3d):
+    """run_microphysics_full_fast with the wrapper on the device (MICRO_WRAP_DEVICE=1).
+
+    Line for line the host path's arithmetic, as eager float64 jax ops; returns
+    device arrays (the caller does jnp.asarray on them, a no-op).
+    """
+    import jax.numpy as jnp
+    nbin, nlev, nlat, nlon = num.shape
+    ncell = nlev * nlat * nlon
+    f64 = jnp.float64
+
+    # Inputs keep their NATIVE dtype, as np.asarray does on the host path: the
+    # CESM T arrives float32, so C.RD * T is a float32 product there (a Python
+    # float is a weak scalar in numpy and in jax alike) and only the division by
+    # it promotes to float64. Casting T to float64 first changes rho in the last
+    # float32 bits -- and through the clip thresholds, the run.
+    T_n = jnp.asarray(temp3d)
+    P_n = jnp.asarray(pres3d)
+    rho_f = (P_n / (C.RD * T_n)).reshape(ncell)                  # kg/m3
+    T_f = T_n.reshape(ncell)
+    P_f = P_n.reshape(ncell)
+    RH_f = jnp.asarray(rh3d).reshape(ncell)
+    inv_rho = 1.0 / jnp.maximum(rho_f, 1e-30)
+    OH_f = _oh_device(oh3d, ncell, nlev, nlat, nlon)
+
+    # mixing ratio -> per-box (1 m3) concentration
+    Nk_all = jnp.asarray(num).reshape(nbin, ncell).T * rho_f[:, None]
+    Mt_all = jnp.asarray(mas).reshape(nbin, ncell).T * rho_f[:, None]
+    S_all = jnp.asarray(so2).reshape(ncell) * rho_f
+    H_all = jnp.asarray(h2so4).reshape(ncell) * rho_f
+
+    # ---- two-moment consistency clip (as the host path) ----
+    XK = jnp.asarray(C.XK_NP)
+    Nk_eff = jnp.where(Nk_all > C.NEPS_N, Nk_all, 0.0)
+    Mt_clip = jnp.clip(Mt_all, Nk_eff * XK[None, :-1], Nk_eff * XK[None, 1:])
+    dM_mr = (Mt_clip - Mt_all) * inv_rho[:, None]
+    w = jnp.asarray(wgt3d).reshape(ncell)[:, None]
+    clip_add = float(jnp.sum(jnp.maximum(dM_mr, 0.0) * w))
+    clip_rem = float(jnp.sum(jnp.minimum(dM_mr, 0.0) * w))
+    del dM_mr, Nk_all, Mt_all
+
+    # ---- build the batched FastState on the device ----
+    Mk = jnp.zeros((ncell, nbin, 2), dtype=f64).at[:, :, SRTSO4].set(Mt_clip)
+    Gc = jnp.zeros((ncell, 2), dtype=f64).at[:, GH2SO4].set(H_all).at[:, GSO2].set(S_all)
+    state = FastState.create(Nk=Nk_eff, Mk=Mk, Gc=Gc, xk=jnp.asarray(C.XK),
+                             temp=T_f, pres=P_f, boxvol=C.BOXVOL, rh=RH_f)
+    del Mk, Gc, Mt_clip
+
+    ncc = max(1, -(-ncell // FAST_CELL_CAP))
+    t0 = time.time()
+    state2, diags = run_fast(
+        state, N_FAST_STEPS, dt=FAST_DT, oh_conc=OH_f,
+        n_cell_chunks=ncc, sort_by_coag_cost=FAST_SORT,
+        alpha=C.ALPHA_COND, fn_scale=FAST_FN_SCALE,
+        coag_sub_cap=FAST_COAG_CAP, cond_sub_cap=FAST_COND_CAP,
+        coag_c_max=FAST_COAG_CMAX)
+    state2.Nk.block_until_ready()
+    dt_fast = time.time() - t0
+
+    if os.environ.get('DEBUG') or os.environ.get('PROFILE'):
+        cc = int(np.asarray(diags['coag_cap_hit']).sum())
+        dc = int(np.asarray(diags['cond_cap_hit']).sum())
+        print(f"  [fast] run_fast: {ncell} cells x {N_FAST_STEPS} steps "
+              f"(dt={FAST_DT:.0f}s, {ncc} chunk(s), sort={FAST_SORT}, wrap=device) in "
+              f"{dt_fast:.1f}s | coag_cap_hit_steps={cc} cond_cap_hit_steps={dc}",
+              flush=True)
+
+    # per-box -> mixing ratio, restore (nbin,nlev,nlat,nlon)/(nlev,nlat,nlon)
+    num2 = (state2.Nk * inv_rho[:, None]).T.reshape(nbin, nlev, nlat, nlon)
+    mas2 = (state2.Mk[:, :, SRTSO4] * inv_rho[:, None]).T.reshape(nbin, nlev, nlat, nlon)
+    so2_2 = (state2.Gc[:, GSO2] * inv_rho).reshape(nlev, nlat, nlon)
+    h2so4_2 = (state2.Gc[:, GH2SO4] * inv_rho).reshape(nlev, nlat, nlon)
+    return num2, mas2, so2_2, h2so4_2, clip_add, clip_rem
 
 
 def _run_fast_multi(Nk_eff, Mt_clip, S_all, H_all, T_f, P_f, RH_f, OH_f, nbin):

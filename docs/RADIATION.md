@@ -30,8 +30,10 @@ every step), on the end-of-step state (stage 5 in
    column of the boundary source (every level with p ≥ 1.005 Pa, the RRTMGP
    table range), aerosol only on the coupled band levels. Gases: the boundary
    source's Q and O3, `CO2_PPM` (380) and `N2O_PPB` (319). Surface albedo from
-   FSNS/FSDS, emissivity 0.98. `RAD_LAT_CHUNK` (96) rows per call; bit-identical
-   at any value.
+   FSNS/FSDS, emissivity 0.98. `RAD_LAT_CHUNK` rows per call (96 in the chunk
+   loop; the `RAD_FAST` path, on by default since 2026-11-23 where validated,
+   uses 192 unless `RAD_LAT_CHUNK` is set, which sets both); bit-identical at
+   any value.
 3. **Heating.** Returned on the band levels in K/s, plus TOA/surface fluxes and
    the 550 nm AOD.
 
