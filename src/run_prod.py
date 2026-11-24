@@ -120,6 +120,7 @@ KNOBS = [
  ("inj", "--inj-lon",      "INJ_LON",      "180.0", "degE", "injection longitude (ignored when --inj-zonal 1)"),
  ("inj", "--inj-zonal",    "INJ_ZONAL",    "1",    "0|1", "1 = spread around the whole latitude ring, 0 = single cell"),
  ("inj", "--inj-mirror",   "INJ_MIRROR",   "0",    "0|1", "release at BOTH +lat and -lat, total split 50/50 (not doubled)"),
+ ("inj", "--inj-so2-sched", "INJ_SO2_SCHED_FILE", None, "PATH", "yearly SO2 schedule CSV (year_offset,tg_so2_yr): TOTAL Tg SO2/yr per 365-day model year from the run start, annual steps, last row held; replaces --inj-so2 (mutually exclusive); see inputs/injection/"),
  # ---- aerosol source / initial condition ----
  ("aer", "--aer-src",      "AER_SRC",      None,   "mam4|carma", "IC/BC reservoir source (default mam4)"),
  ("aer", "--init-bin",     "INIT_BIN",     None,  "so4|dgnum", "how MAM4 modes are binned onto TOMAS"),
@@ -283,7 +284,7 @@ def slots_needed(values):
 # in a preset would silently change behaviour (DEBUG=0 turns debugging ON).
 PRESET_FORBIDDEN = {
     "INJ_SO2_TG_YR", "INJ_H2SO4_TG_YR", "INJ_HPA", "INJ_LAT", "INJ_LON",
-    "INJ_ZONAL", "INJ_MIRROR", "N_HOURS", "N_DAYS", "OUT_TAG", "RESUME", "H0",
+    "INJ_ZONAL", "INJ_MIRROR", "INJ_SO2_SCHED_FILE", "N_HOURS", "N_DAYS", "OUT_TAG", "RESUME", "H0",
     "MICRO_SUBSTEPS", "OH_SUBSTEPS", "DEBUG", "PROFILE", "DUMP_PREMICRO",
     "INIT_SIGMA", "TOMAS_JAX_PATH", "RRTMGP_PATH", "JCM_STRAT_PATH",
 }
