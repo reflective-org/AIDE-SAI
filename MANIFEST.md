@@ -54,8 +54,8 @@ hard-coded launcher presets that are visible only by diffing branches.
 
 | preset | meteorology | grid | `CLIM_FILE` (relative to the repo root) | reproduces |
 |---|---|---|---|---|
-| `cesm_numerical` (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz` | the 2-year CESM runs `fast_2yr_inj6_30NS` / `fast_2yr_ctrl`, bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`; § Code state); with the perf defaults (on) within run-to-run GPU noise; `ADV_SL_RHONORM=1` (default since 2026-11-22) is a real change, § sl_lr level air mass |
-| `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`); with the perf defaults (on) within run-to-run GPU noise; `ADV_SL_RHONORM=1` (default since 2026-11-22) is a real change, § sl_lr level air mass |
+| `cesm_numerical` (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz` | the 2-year CESM runs `fast_2yr_inj6_30NS` / `fast_2yr_ctrl`, bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`; § Code state); with the perf defaults (on) within run-to-run GPU noise; `ADV_SL_RHONORM=1` (default since PR #4, merged into dev 2026-11-24) is a real change, § sl_lr level air mass |
+| `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`); with the perf defaults (on) within run-to-run GPU noise; `ADV_SL_RHONORM=1` (default since PR #4, merged into dev 2026-11-24) is a real change, § sl_lr level air mass |
 | `jcm_online_numerical` | jcm-strat AL7h **run live**, 6-hourly (`MET_SRC=jcm_online`; code from the `jcm-strat` slot, `models/jcm-strat` f3c2070; started from the same `JCM_DIR` chain) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19) — **statistically, not bitwise**: jcm-strat on GPU is not deterministic run to run (§ Code state); that run had `ADV_SL_RHONORM=0` and the perf switches at 0, and their defaults (on) are untested on this linking (`RAD_FAST` adds ~2 GB on the GPU jcm-strat shares) |
 
 All three also set `BC_SRC=clim`, `INIT_BIN=so4` and `ADV_VPOS=1`, and pin the
@@ -472,7 +472,7 @@ any directory. What they take from the cwd is the checkpoint they read
   **To reproduce the pre-switch bit pattern** (the 2-year preset runs, any run
   before 2026-11-23) set all five to 0:
   `RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`
-  (and `ADV_SL_RHONORM=0` for runs before 2026-11-22, § sl_lr level air mass).
+  (and `ADV_SL_RHONORM=0` for any run made before PR #4 reached dev on 2026-11-24, which includes the perf validation runs above; § sl_lr level air mass).
   Each `=0` is exactly the old code path (the off-path code was not changed).
   Validated only over 48 h; the year-scale behaviour of the defaults is not
   yet tested.
@@ -778,7 +778,7 @@ any directory. What they take from the cwd is the checkpoint they read
   — and is kept only for the record. `docs/PROCESSES.md` §1.8–1.10.
   `PHYS_CFG` stamps `ADV_SCHEME=sl`, `=ffsl` and `=lr` (warn-only).
 
-- **`ADV_SL_RHONORM=1`: sl_lr level air mass (default since 2026-11-22).**
+- **`ADV_SL_RHONORM=1`: sl_lr level air mass (default since PR #4, merged into dev 2026-11-24).**
   After each horizontal sub-step `sl_lr._horizontal_substep` rescales the
   carried air mass so every level keeps its total, `sum(ac rho_out) =
   sum(ac rho_in)`. A horizontal step cannot change a level's air mass, but the
@@ -800,8 +800,8 @@ any directory. What they take from the cwd is the checkpoint they read
   (now better than `lr`); CH4 (monthly truth) RMSE 2.64e-8 → 3.34e-8 and bias
   +5.8e-9 → +1.7e-8, which is where K=24 lands with or without the switch —
   probably two compensating errors in the old K=12 CH4 score; open.
-  **What the switch changes:** a bare run is not bit-identical to runs before
-  2026-11-22, including the 2-year CESM and JCM runs (set `ADV_SL_RHONORM=0`
+  **What the switch changes:** a bare run is not bit-identical to runs made before PR #4 reached dev
+  (2026-11-24), including the 2-year CESM and JCM runs (set `ADV_SL_RHONORM=0`
   to reproduce them). PHYS_CFG stamps it (warn-only; checkpoints written before
   the stamp existed resume without a warning).
 

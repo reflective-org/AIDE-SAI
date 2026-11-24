@@ -346,7 +346,7 @@ has a column of its own.
 | `--adv-metric` | `ADV_METRIC` | — | — | cos(phi) area metric in the y-sweep |
 | `--adv-dxfix` | `ADV_DXFIX` | — | — | true grid spacing in the x-sweep |
 | `--adv-polar` | `ADV_POLAR` | — | — | polar cap treatment (zonal = stirred, mass-conserving) |
-| `--adv-sl-rhonorm` | `ADV_SL_RHONORM` | — | — | SL: 1 (default since 2026-11-22) = rescale each level's air mass after the horizontal step so the level total is conserved, which stops the per-level fixer imprinting a drift (uniform q: +2% at 1.24 hPa in 10 days -> 1e-4); 0 = the runs before 2026-11-22, including the 2-year runs |
+| `--adv-sl-rhonorm` | `ADV_SL_RHONORM` | — | — | SL: 1 (default since PR #4, merged into dev 2026-11-24) = rescale each level's air mass after the horizontal step so the level total is conserved, which stops the per-level fixer imprinting a drift (uniform q: +2% at 1.24 hPa in 10 days -> 1e-4); 0 = every run made before PR #4 reached dev (2026-11-24), including the 2-year runs |
 | `--adv-sl-fixlog` | `ADV_SL_FIXLOG` | — | — | SL diagnostic: 1 = log what the level and column mass fixers corrected every sub-step (results unchanged; default 0) |
 | `--adv-sl-device-resample` | `ADV_SL_DEVICE_RESAMPLE` | — | — | perf: SL time-resample of the step winds on the device (same float32 formula, bit-identical; engages for float32 winds, prints ENGAGED/not engaged once; default 1 since 2026-11-23; 0 = numpy, the old default) |
 

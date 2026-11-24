@@ -657,7 +657,7 @@ PHYS_CFG = np.array([float(WET_SETTLING), float(WET_OPTICS), float(SETTLE_ENABLE
                      float(MET_SRC == 'jcm_online'),
                      # 2026-11-22, appended: sl_lr renormalises each level's air
                      # mass after the horizontal step (ADV_SL_RHONORM, default 1;
-                     # 0 reproduces the runs before 2026-11-22). -1 when the
+                     # 0 reproduces the runs made before PR #4, 2026-11-24). -1 when the
                      # transport is not sl.
                      (float(os.environ.get('ADV_SL_RHONORM', '1') != '0')
                       if ADV_SCHEME == 'sl' else -1.0)])
