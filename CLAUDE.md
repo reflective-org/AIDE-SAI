@@ -10,12 +10,17 @@ slot — meteorology (`MET_SRC`), boundary climatology (`BC_SRC`), transport
 (`ADV_SCHEME`), aerosol microphysics (`MICRO_ENGINE`), settling, radiation
 (`RAD_ENGINE`) — and each slot is filled by a numerical scheme today, or by a
 learned emulator later. The meteorology is prescribed (one-way: the winds are
-read and the circulation never responds); aerosol, radiation and microphysics
-are interactively coupled. Under `RAD_T_FEEDBACK=1` the radiative heating from
-the model's own aerosol accumulates into the temperature the microphysics, the
-settling and the next radiation call see; the default is `RAD_T_FEEDBACK=0`,
-where T_met drives them and `dT_rad` and the heating rate (`hr_kday`) are
-diagnostics (`dT_rad` only damps, via the emission temperature).
+read and the circulation never responds). **Every shipped linking is one-way
+throughout:** meteorology → aerosol → radiation, and nothing the radiation
+computes reaches the aerosol, the chemistry or the circulation. The default
+`RAD_T_FEEDBACK=0` (all presets) has T_met drive the microphysics, settling,
+RH, OH and optics; `dT_rad` and the heating rate (`hr_kday`) are diagnostics,
+and `dT_rad` enters only the band temperature of the radiation's own next
+perturbed solve (it damps itself there). The one opt-in loop is
+`RAD_T_FEEDBACK=1`, where that heating accumulates into the temperature the
+microphysics, settling, RH, OH and the next radiation call see; no preset sets
+it, and even then the winds stay prescribed. Do not describe the model as
+closed-loop or interactively coupled.
 
 **A linking is a preset, not a branch.** `configs/<name>.env` fixes which
 coupled model runs: the knob values that differ between linkings and, via

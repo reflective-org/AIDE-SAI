@@ -55,10 +55,13 @@ every step), on the end-of-step state (stage 5 in
 
 ### `RAD_T_FEEDBACK`: where `dT_rad` goes
 
-`0` (default since 2026-11-17, and what both presets run): the microphysics, the
-settling, the RH, the OH number density and the aerosol optics all see `T_met`.
-`dT_rad` enters **only** the emission temperature of the perturbed call, so its
-longwave response (the Planck damping) still bounds it, and the heating rate of
+`0` (default since 2026-11-17, and what all three presets run): the
+microphysics, the settling, the RH, the OH number density and the aerosol
+optics all see `T_met`, so the model is one-way throughout. `dT_rad` enters
+**only** the band temperature of the perturbed call (`T_band_override`), which
+RRTMGP uses for both the Planck emission and the temperature-dependent gas
+absorption. Its longwave response (the Planck damping) still bounds it, `hr_kday`
+and ARF include that response, and the heating rate of
 every call is written out as `hr_kday` (3-D, probe and zonal frames; `hr_min/max/rms`
 in the timeseries). `1` is the earlier closed loop: `T_met + dT_rad` everywhere.
 Stamped into `PHYS_CFG`.

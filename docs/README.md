@@ -26,9 +26,10 @@
 
 TOMAS sectional aerosol microphysics (`models/tomas-jax`, the `tomas_jax.fast`
 engine) and RRTMGP radiation (`models/jax-rrtmgp`) on a prescribed
-stratospheric circulation — one-way meaning *to the meteorology*: the winds are
-read and never respond. The aerosol–radiation–microphysics loop inside that
-forcing is closed only under `RAD_T_FEEDBACK=1`; by default it is open (see
+stratospheric circulation. Every shipped linking is one-way throughout: the
+winds and temperature are read and never respond, and the radiative heating of
+the model's own aerosol reaches nothing but the radiation's diagnostics. The
+only loop is the opt-in `RAD_T_FEEDBACK=1`, which no preset sets (see
 [Not included](#not-included-the-one-way-scope)).
 
 Two seams decide where the inputs come from: **`MET_SRC`** supplies U, V, OMEGA
@@ -162,11 +163,15 @@ because on a shared machine using more is a decision to make explicitly.
 - **Aerosol → circulation feedback.** The winds are prescribed and never
   modified, so there is no self-lofting and no dynamical response. By default
   (`RAD_T_FEEDBACK=0`) radiative heating does not feed back either: the
-  meteorology's T drives the microphysics, settling, RH and optics, the heating
-  rate is a diagnostic (`hr_kday`), and `dT_rad` enters only the radiation's
-  emission temperature. Under `RAD_T_FEEDBACK=1` the heating feeds back on the
-  temperature the microphysics and the next radiation call see, so that loop is
-  closed — the circulation one never is.
+  meteorology's T drives the microphysics, settling, RH, OH and optics, the
+  heating rate is a diagnostic (`hr_kday`), and `dT_rad` enters only the band
+  temperature of the radiation's own next perturbed solve. No preset changes
+  this. Under the opt-in `RAD_T_FEEDBACK=1` the heating feeds back on the
+  temperature the microphysics, settling, RH, OH and the next radiation call
+  see, so that column loop is closed; the circulation one never is.
+- **Aerosol → chemistry feedback.** OH is prescribed (a solar-zenith curve by
+  default), so SO2 oxidation neither depletes OH nor sees the aerosol's
+  dimming.
 - **Wet removal and dry deposition.** Gravitational settling out of the band
   bottom is the only true aerosol sink; material crossing that face is treated
   as removed by the (unmodelled) tropospheric wet scavenging below it.

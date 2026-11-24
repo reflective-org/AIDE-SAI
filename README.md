@@ -30,32 +30,54 @@ coupling: other dycores, emulated ones included, and other aerosol schemes
 > Read the standing caveats in [MANIFEST.md](./MANIFEST.md) before you quote any
 > number from it.
 
-## One-way and closed-loop coupling
+## Coupling: one-way in every shipped linking
 
-A linking couples two things to different degrees, and the difference matters
-when you read the output.
+**No shipped linking closes a feedback loop.** Information flows one way, from
+the meteorology to the aerosol and from the aerosol to the radiation. Nothing
+the radiation computes reaches the aerosol or the circulation. Read the
+radiative output (heating rate, AOD550, ARF) as the response of a fixed
+circulation to the aerosol, not of a climate that adjusts to it.
 
-**The meteorology is one-way.** Winds (U, V, OMEGA) and temperature are *read*
-from the meteorology source, and nothing the aerosol does ever changes them.
-The circulation therefore never responds: no self-lofting, no change in
-Brewer-Dobson ascent, nothing sent back to the dycore. Two shipped linkings
-read a finished dycore run (CESM2 history files, or a completed jcm-strat run).
-The third, `jcm_online_numerical`, runs the jcm-strat model alongside the
-coupler (`MET_SRC=jcm_online`), but it still only sends winds and temperature
-one way. Closing this loop needs a dycore that runs alongside the coupler and
-takes the aerosol heating as a forcing. The live jcm-strat server is where a
-heating term would go back; an emulated dycore behind the `MET_SRC` seam is
-the other planned way.
+**Meteorology → aerosol.** Winds (U, V, OMEGA) and temperature are *read* from
+the meteorology source, and nothing the aerosol does ever changes them. The
+circulation never responds: there is no self-lofting, no change in
+Brewer-Dobson ascent, and nothing is sent back to the dycore. Two shipped
+linkings read a finished dycore run (CESM2 history files, or a completed
+jcm-strat run). The third, `jcm_online_numerical`, runs jcm-strat live beside
+the coupler (`MET_SRC=jcm_online`), but its line protocol only *requests*
+frames (`hello`, `frame`, `quit`) and has no message that hands anything back.
+Running a dycore live is what would make this loop closable, not what closes
+it. Closing it needs a dycore that takes the aerosol heating as a forcing: a
+heating message added to the live jcm-strat server, or an emulated dycore
+behind the `MET_SRC` seam. The live jcm-strat also nudges u, v and T to ERA5
+below 400 hPa and nudges the QBO, which would damp part of any such response.
 
-**Aerosol, microphysics and radiation are coupled to each other.** Inside the
-prescribed meteorology the model's own aerosol sets the optics, and the optics
-heat the layer. Under the presets' setting (`RAD_T_FEEDBACK=0`) that heating is
-a diagnostic (`hr_kday`, `dT_rad`): the microphysics, settling, RH and the
-optics all see the meteorology's T, and the integrated `dT_rad` enters only the
-radiation's emission temperature. Under `RAD_T_FEEDBACK=1` the loop closes: the
-heating accumulates into the temperature that the microphysics, settling and
-the next radiation call all see. In the band, aerosol is made and removed
-inside the model:
+**Aerosol → radiation.** The model's own aerosol sets the optics, and RRTMGP
+turns them into a heating rate (`hr_kday`), AOD550 and ARF. Under the presets'
+`RAD_T_FEEDBACK=0` that heating goes nowhere else. The microphysics, settling,
+RH, the OH number density and the optics all use the meteorology's T. The
+heating accumulates in `dT_rad`, which enters only the band temperature of the
+radiation's own next perturbed solve: its longwave emission (the Planck
+damping that bounds `dT_rad`) and its temperature-dependent gas absorption.
+So `hr_kday` and ARF include the radiative response to `dT_rad`, not only the
+aerosol's direct effect, but nothing reaches the aerosol. This holds for `RAD_MODE=anomaly` (the default) and `full`;
+`RAD_MODE=flux` makes one solve at the meteorology's T, `dT_rad` stays 0 and
+no ARF is computed (see [docs/RADIATION.md](./docs/RADIATION.md)). Nothing
+radiative reaches the chemistry either: OH is prescribed, so the aerosol does
+not dim its own oxidant.
+
+**The one opt-in loop.** `RAD_T_FEEDBACK=1`, which no preset sets, adds
+`dT_rad` to the temperature that the microphysics, settling, RH, OH and the
+next radiation call (optics included) see. That closes
+aerosol → heating → T → aerosol in the column. It was the behaviour of this
+model's predecessor before 2026-11-17 and has never been the default in this
+repository (see `MANIFEST.md`). Even with it on, the winds stay prescribed, so
+the circulation still does not respond.
+
+In the band, aerosol is made by the injection and the microphysics and removed
+by settling and transport out of the band. The polar caps (|lat| > 80°) and,
+under `BC_EDGE=clamp`, the top and bottom slabs are reset from the
+climatology every step, so they act as prescribed sources and sinks too:
 
 ```
 met source ──► U, V, OMEGA ───────► transport (semi-Lagrangian, sl K=12)
@@ -65,17 +87,22 @@ BC_SRC=clim├─► Q ─────────────────► RH
  CESM clim)├─► SO2, H2SO4 ────────► gas-phase IC/BC
            └─► O3, CH4, surface ──► radiation column
 
-  SOURCE  continuous SO2 injection    SO2 ─OH─► H2SO4 ─► nucleation/condensation
-  SINK    gravitational settling out of the band bottom (no wet removal)
+  SOURCE  SO2 injection (constant, or a yearly schedule: INJ_SO2_SCHED_FILE),
+          optionally direct H2SO4 (INJ_H2SO4_TG_YR)
+          SO2 ─OH─► H2SO4 ─► nucleation/condensation   (OH prescribed)
+  SINK    gravitational settling out of the band bottom, transport out of the
+          band (no wet removal); polar caps and clamped edges reset each step
   OPTICS  RRTMGP + Mie on the wet H2SO4/H2O droplet ──► heating, AOD550, ARF_toa
 
-  DEFAULT       aerosol ─► optics ─► heating rate (hr_kday), a diagnostic;
-  (open)        microphysics, settling, RH and optics see the met source's T
-  CLOSED LOOP   only under RAD_T_FEEDBACK=1:
+  ALL PRESETS   met source ─► aerosol ─► optics ─► hr_kday, dT_rad, AOD550, ARF
+  (one-way)     diagnostics only; microphysics, settling, RH, OH and optics see
+                the met source's T; dT_rad feeds only the next radiation solve
+  OPT-IN LOOP   RAD_T_FEEDBACK=1 (no preset sets it):
                 aerosol ─► optics ─► heating ─► dT accumulates into T
                     ▲                                    │
-                    └──── microphysics + settling ◄───────┘
-  NOT CLOSED    U, V, OMEGA are the met source's throughout
+                    └── microphysics, settling, RH, OH ◄──┘
+  NEVER CLOSED  U, V, OMEGA come from the met source throughout; no linking
+                sends anything back to the dycore
 ```
 
 **State.** 40 TOMAS bins × (number, dry SO4 mass) plus 2 gas tracers = 82
