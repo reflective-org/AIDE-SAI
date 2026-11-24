@@ -536,15 +536,32 @@ INJ_ZONAL = os.environ.get('INJ_ZONAL', '1') != '0'  # 1 = spread over the full 
 # one hemisphere and drives a cross-equatorial gradient that is usually an artifact
 # of the setup rather than the intent. No-op at INJ_LAT=0 (a row is its own mirror).
 INJ_MIRROR = os.environ.get('INJ_MIRROR', '0') != '0'
+# INJ_SO2_SCHED_FILE: a yearly SO2 schedule (src/inj_schedule.py) in place of the
+# constant INJ_SO2_TG_YR -- row k is the TOTAL Tg SO2/yr in model year k from the
+# run start, constant within the year, last row held after the list ends. Same
+# geometry knobs (INJ_LAT/LON/HPA/ZONAL/MIRROR). Mutually exclusive with
+# INJ_SO2_TG_YR so a run has one source of truth for its rate.
+INJ_SO2_SCHED_FILE = os.environ.get('INJ_SO2_SCHED_FILE', '')
+INJ_SO2_SCHED = None
+if INJ_SO2_SCHED_FILE:
+    import inj_schedule
+    if INJ_SO2_TG_YR != 0.0:
+        raise SystemExit("coupling: INJ_SO2_SCHED_FILE and INJ_SO2_TG_YR are mutually "
+                         "exclusive -- the schedule sets the rate; leave INJ_SO2_TG_YR at 0")
+    INJ_SO2_SCHED = inj_schedule.load(INJ_SO2_SCHED_FILE)
 # The scenario as one array, for the state ckpt (so a RESUME cannot cross scenarios)
 # and for every output file (so a sweep's npz says which scenario produced it -- the
 # filename TAG is a label the user chose, not evidence). APPEND-ONLY: the RESUME
 # check compares the common prefix, so a checkpoint written before a field was added
 # stays resumable instead of being locked out by a length change.
 INJ_CFG = np.array([INJ_SO2_TG_YR, INJ_H2SO4_TG_YR, INJ_LAT, INJ_LON, INJ_HPA,
-                    float(INJ_ZONAL), float(INJ_MIRROR)])
+                    float(INJ_ZONAL), float(INJ_MIRROR),
+                    # schedule: row count and CRC32 of the rates (0, 0 = none)
+                    float(0 if INJ_SO2_SCHED is None else len(INJ_SO2_SCHED)),
+                    0.0 if INJ_SO2_SCHED is None else inj_schedule.checksum(INJ_SO2_SCHED)])
 INJ_CFG_KEYS = np.array(['INJ_SO2_TG_YR', 'INJ_H2SO4_TG_YR', 'INJ_LAT',
-                         'INJ_LON', 'INJ_HPA', 'INJ_ZONAL', 'INJ_MIRROR'])
+                         'INJ_LON', 'INJ_HPA', 'INJ_ZONAL', 'INJ_MIRROR',
+                         'INJ_SCHED_N', 'INJ_SCHED_CRC'])
 SETTLE_ENABLE = os.environ.get('SETTLE', '1') != '0'
 # Size the settling particle as the WET H2SO4/H2O droplet (Tabazadeh composition,
 # Tang density) instead of the dry SO4 core. ON by default as of 2026-08-03;
@@ -2319,7 +2336,8 @@ def main():
     #   dq = (kg SO2 released into the cell over the step) / (kg air in cell)
     inj_dq = None
     inj_dq_h2so4 = None
-    if INJ_SO2_TG_YR > 0 or INJ_H2SO4_TG_YR > 0:
+    inj_sched_rate = None   # INJ_SO2_SCHED: the rate inj_dq was last built for
+    if INJ_SO2_TG_YR > 0 or INJ_H2SO4_TG_YR > 0 or INJ_SO2_SCHED is not None:
         k_inj = int(np.argmin(np.abs(PLEV_PA / 100.0 - INJ_HPA)))
         j_inj = int(np.argmin(np.abs(lat - INJ_LAT)))
         i_inj = int(np.argmin(np.abs(lon - INJ_LON)))
@@ -2370,6 +2388,11 @@ def main():
         if INJ_SO2_TG_YR > 0:
             inj_dq = _inj_increment(INJ_SO2_TG_YR)
             print(f"  SAI injection: {INJ_SO2_TG_YR:g} Tg SO2/yr at {loc}", flush=True)
+        if INJ_SO2_SCHED is not None:
+            # the year's increment is built at its first step (see the step loop)
+            print(f"  SAI injection: yearly schedule {INJ_SO2_SCHED_FILE} "
+                  f"(Tg SO2/yr by model year: {', '.join(f'{r:g}' for r in INJ_SO2_SCHED)}; "
+                  f"last held) at {loc}", flush=True)
         if INJ_H2SO4_TG_YR > 0:
             inj_dq_h2so4 = _inj_increment(INJ_H2SO4_TG_YR)
             print(f"  SAI injection: {INJ_H2SO4_TG_YR:g} Tg H2SO4/yr (gas, ad-hoc) "
@@ -2900,6 +2923,15 @@ def main():
         # applied at the step start so the fresh pulse is advected and
         # oxidized within the same step it is emitted; touches ONLY the gas,
         # so the aerosol staged budget is unaffected by the ordering
+        if INJ_SO2_SCHED is not None:
+            # yearly schedule: rebuild the increment when the year's rate changes;
+            # it0 is hours since the run start, so a RESUME picks up the right year
+            _r = inj_schedule.rate_at(INJ_SO2_SCHED, it0)
+            if _r != inj_sched_rate:
+                inj_sched_rate = _r
+                inj_dq = _inj_increment(_r)
+                print(f"  SAI injection: from model hour {it0} (schedule year "
+                      f"{it0 // inj_schedule.HOURS_PER_YEAR}): {_r:g} Tg SO2/yr", flush=True)
         if inj_dq is not None:
             so2 = so2 + inj_dq
             inj_cum += float((inj_dq * A_j).sum())

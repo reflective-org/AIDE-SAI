@@ -916,6 +916,15 @@ any directory. What they take from the cwd is the checkpoint they read
   the same total 50/50 — the total is what you asked for, not doubled. (The
   2-year runs used `INJ_ZONAL=0`, `INJ_MIRROR=1` at 30° and 55 hPa: a
   single-longitude release on both hemispheres.)
+- `INJ_SO2_SCHED_FILE` (added 2026-11-24, for the AIDE-eval CCMI-2022 SAI
+  validation): a yearly rate schedule in place of the constant `INJ_SO2_TG_YR`.
+  Annual steps, because the WACCM controller it reproduces updates the rate once
+  a year. The year counts 365-day years from the run start (hour 0 = `H0`), not
+  calendar years of the meteorology. A file is a path outside the checkpoint, so
+  the parsed rates are stamped into `inj_cfg` (`INJ_SCHED_N`, `INJ_SCHED_CRC`);
+  a RESUME under a changed file is refused. A one-row schedule of 6.0 is
+  bit-identical to `INJ_SO2_TG_YR=6` (the increment is built by the same
+  `_inj_increment`).
 - Diagnostic core window is **symmetric**, `-1` per end → 1.6–121.5 hPa, 22/24
   levels on f09 (1.2–125.5 hPa, 45/47 on JCM), excluding exactly the two levels
   the reservoir is written into.

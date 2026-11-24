@@ -21,6 +21,15 @@ Natural Earth 1:110m coastlines (shapefile: `.shp`, `.shx`, `.dbf`, `.prj`,
 (https://www.naturalearthdata.com), which is in the public domain. 95 KB, so it
 is tracked; the scripts draw maps without coastlines if it is missing.
 
+## `injection/` (tracked)
+
+Yearly SO2 injection schedules for `INJ_SO2_SCHED_FILE` (`src/inj_schedule.py`;
+format in each file's header). `ccmi2022_sai_30NS_2030-2034.csv`: total SO2
+injection of the CCMI-2022 "SSP2-4.5 SAI" CESM2-WACCM6 run for 2030-2034, all at
+30N/30S in those years, digitised from Tilmes et al. (2025), ACP 25, 6001,
+Fig. 2b (read error ~0.3 Tg/yr). Use with `--inj-lat 30 --inj-mirror 1
+--inj-zonal 0 --inj-lon 180 --inj-hpa 75`.
+
 ## `cache/` (gitignored)
 
 The radiation reference cache (`RAD_REF_CACHE`, default `inputs/cache/rad_ref`;

@@ -39,6 +39,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
+- **Yearly SO2 injection schedule, `INJ_SO2_SCHED_FILE` (`--inj-so2-sched`).**
+  A CSV (`year_offset,tg_so2_yr`) gives the total Tg SO2/yr per 365-day model
+  year from the run start: constant within a year, the last row held after the
+  list ends, same geometry knobs as `INJ_SO2_TG_YR`, with which it is mutually
+  exclusive. The row count and a CRC32 of the rates are appended to `inj_cfg`
+  (`INJ_SCHED_N`, `INJ_SCHED_CRC`), so a RESUME onto a different schedule is
+  refused. Ships `inputs/injection/ccmi2022_sai_30NS_2030-2034.csv`, the
+  CCMI-2022 SAI rates for 2030-2034 (Tilmes et al. 2025, Fig. 2b). CI:
+  `scripts/validation/test_inj_schedule.py`. Runs without a schedule are
+  unchanged except for the two appended `inj_cfg` entries (0, 0).
 - `ADV_SL_FIXLOG=1`: logs the level and column mass-fixer corrections per
   sub-step (diagnostic, results unchanged), and
   `scripts/validation/sl_fixer_cap_diag.py` / `sl_fixer_cap_summary.py`, the
