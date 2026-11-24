@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- **Docs: the model is one-way in every shipped linking.** README, CLAUDE.md,
+  docs/README.md, RADIATION.md, BOUNDARY_CONDITIONS.md, CONFIGURATION.md,
+  MANIFEST and the `--rad-t-feedback` help no longer call aerosol, radiation and
+  microphysics interactively coupled. Meteorology → aerosol → radiation, with
+  no feedback: `jcm_online`'s protocol sends nothing back, and under
+  `RAD_T_FEEDBACK=0` (all presets) `dT_rad` enters only the band temperature of
+  the radiation's own perturbed solve (emission and gas absorption, so it is in
+  `hr_kday` and ARF, not only the Planck term). The README also lists the
+  polar-cap/edge resets, the direct H2SO4 and scheduled SO2 sources, and the
+  prescribed OH. No code behaviour changes.
 - **sl_lr conserves each level's air mass (`ADV_SL_RHONORM=1`, new default).**
   The per-level mass fixer was imprinting a drift from a level air mass that
   the polar caps and the Jacobian did not conserve: uniform q drifted +2 % at

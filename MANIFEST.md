@@ -818,8 +818,10 @@ any directory. What they take from the cwd is the checkpoint they read
 
 - **`RAD_T_FEEDBACK=0`** (2026-11-17): T_met drives microphysics, settling, RH
   and the radiation optics. `dT_rad` is integrated, but it enters only the
-  perturbed call's emission temperature (anomaly mode's longwave Planck
-  damping), so the longwave cooling is still in the heating rate. The heating
+  band temperature of the perturbed call (its emission and gas absorption:
+  anomaly mode's longwave Planck damping), so the longwave cooling is still in
+  the heating rate and in ARF. With it, every preset is one-way throughout:
+  nothing radiative reaches the aerosol, the chemistry or the circulation. The heating
   rate of the last radiation call is output as `hr_kday` (K/day): in the 3-D
   frames, in the probe/zonal frames (`frames_hr_kday`, `frames_zm_hr_kday`), as
   `hr_min/max/rms` in the timeseries, and in the state/final files.

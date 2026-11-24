@@ -106,7 +106,7 @@ anomaly is "SAI against an unperturbed climatological stratosphere" rather than
 ## What stays open
 
 - Once a dycore responds to the aerosol's radiative heating (two-way
-  coupling), the pole and bottom questions get re-asked inside its own
+  coupling, which no linking has today: all are one-way), the pole and bottom questions get re-asked inside its own
   dynamics; the climatology remains valid as the *chemical/background*
   boundary either way.
 - A flux-form bottom BC (optional).
