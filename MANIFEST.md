@@ -633,11 +633,19 @@ any directory. What they take from the cwd is the checkpoint they read
     second run on the same cache directory (a control beside an injected run,
     a rerun) was served the first run's reference solves: the anomaly then
     held a (T_this - T_other) term that is not aerosol. The provenance run
-    below was hit for its first four radiation calls (hours 6-24, written by
-    the 24-h smoke run the day before); every later hour it computed itself. A
-    run on a cold cache computes exactly what it computes now, so only the
-    reuse changes. Cost: the reference solve and its MAM4 re-binning on every
-    call, ~5.6 s of the stage, about +2 h per simulated year.
+    below was hit for its first four radiation calls (hours 6-24, written
+    ~1.5 h earlier by the 24-h smoke run `jcm_online_smoke24_inj6`); every
+    later hour it computed itself. Because `dT_rad` accumulates, that
+    term outlived the four calls: at hour 24 its `dT_rad` was +1.88/-1.42 K
+    pointwise, rms 0.019 K, against +0.052 K max, rms 0.00014 K for the smoke run
+    on its own reference; rms 0.003 K by about day 5, visible for 1-3 weeks. So
+    the first 2-3 weeks of that run's `dT_rad`, `hr_kday` and ARF carry a
+    non-aerosol term. Under `RAD_T_FEEDBACK=0` its aerosol, microphysics and
+    AOD were not affected. A run on a cold cache computes exactly what it
+    computes now, so only the reuse changes. Cost: none against a cold-cache
+    run (the provenance run was one for 1456 of its 1460 calls); against a
+    warm cache the reference solve and re-binning add ~2-3 s per call on the
+    JCM grid (7.4 s median miss vs 4-6 s hit), about 1 h per simulated year.
   - **Stamps.** `GRID_CFG` met code 3; a RESUME between `jcm` (2) and
     `jcm_online` (3) is allowed (same grid). `PHYS_CFG` gains
     `MET_SRC=jcm_online` (appended; warns on a switch).

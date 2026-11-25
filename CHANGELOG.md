@@ -13,8 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   depends on the run's own live T. The key's archive entry was the constant
   `jcm_online:<chain>`, so a second run on the same cache (a control beside an
   injected run, a rerun) took the first run's reference solves. The cache is
-  now off under `jcm_online` and `build_ref_cache.py` refuses it. A run on a
-  cold cache is unchanged; about +2 h per simulated year.
+  now off under `jcm_online` (`rad_cache.RefCache` itself refuses a live met
+  source) and `build_ref_cache.py` refuses it. A run on a cold cache is
+  unchanged; against a warm cache about +1 h per simulated year. The 1-year run
+  `jcm_online_1yr_inj6_30NS` was hit for hours 6-24, which left a non-aerosol
+  term in its first 2-3 weeks of `dT_rad`, `hr_kday` and ARF (MANIFEST.md).
 
 ### Changed
 

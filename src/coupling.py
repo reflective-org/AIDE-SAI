@@ -1971,7 +1971,8 @@ def main():
             print(f"  reference cache: OFF ({RAD_REF_CACHE_OFF_WHY}; "
                   f"RAD_REF_CACHE={RAD_REF_CACHE} ignored)", flush=True)
         print(f"  RAD_ENGINE={RAD_ENGINE} RAD_REF={RAD_REF or '-'} "
-              f"RAD_REF_EVERY={RAD_REF_EVERY} RAD_REF_CACHE={RAD_REF_CACHE} "
+              f"RAD_REF_EVERY={RAD_REF_EVERY} "
+              f"RAD_REF_CACHE={'off(' + MET_SRC + ')' if RAD_REF_CACHE_OFF_WHY else RAD_REF_CACHE} "
               f"RAD_SAMPLE_EVERY={RAD_SAMPLE_EVERY} "
               f"RAD_SOLAR={rad.solar_mode} (window {rad.solar_window_h:g} h"
               + (f", RAD_SOLAR_ALPHA={rad.alpha:g}" if rad.solar_mode == 'window_blend' else "")

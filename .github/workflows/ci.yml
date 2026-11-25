@@ -79,6 +79,11 @@ jobs:
       - name: injection schedule
         run: python scripts/validation/test_inj_schedule.py
 
+      # The radiation reference cache refuses a live met source (jcm_online):
+      # its reference solve depends on the run, not on the archive hour.
+      - name: reference cache guard
+        run: python scripts/validation/test_rad_cache_guard.py
+
   lint:
     name: lint
     runs-on: ubuntu-latest
