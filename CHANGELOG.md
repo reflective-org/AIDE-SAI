@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **CCMI 2030-2034 injection rates read at the year vertex.**
+  `inputs/injection/ccmi2022_sai_30NS_2030-2034.csv` is now 3.81, 4.72, 5.60,
+  6.34, 6.70 Tg SO2/yr (was 4.27, 5.15, 6.00, 6.39, 6.87). Fig. 2b of Tilmes et
+  al. (2025) has one vertex per year at the integer-year tick; the first reading
+  averaged the curve over [Y, Y+1), about the mean of years Y and Y+1. The old
+  values move to `ccmi2022_sai_30NS_2030-2034_yearmean.csv` (used by
+  `runs/ccmi2030_inj`; a RESUME of it must point there).
 - **RESUME no longer leaves a seam.** The advection's boundary values
   (`qfroz`: polar-cap freeze target, open-face inflow) were not checkpointed,
   so the first resumed step used the hour-0 (January) values: in
