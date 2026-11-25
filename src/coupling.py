@@ -902,8 +902,7 @@ if not (np.isfinite(MICRO_FN_SCALE) and MICRO_FN_SCALE >= 0.0):
                      f"got {MICRO_FN_SCALE:g}")
 if MICRO_FN_SCALE != 1.0 and MICRO_MODE != 'full':
     raise SystemExit(f"coupling: MICRO_FN_SCALE={MICRO_FN_SCALE:g} needs MICRO=full "
-                     f"(tomas-jax dev make_step); MICRO={MICRO_MODE} has no nucleation scale "
-                     f"(the fast engine's is FAST_FN_SCALE)")
+                     f"(tomas-jax dev make_step); MICRO={MICRO_MODE} has no nucleation")
 # step kwargs that are passed only when set (see MICRO_COAG_SCALE, MICRO_FN_SCALE)
 _STEP_EXTRA = ({'coag_kernel_scale': MICRO_COAG_SCALE} if MICRO_COAG_SCALE != 1.0 else {})
 if MICRO_FN_SCALE != 1.0:
