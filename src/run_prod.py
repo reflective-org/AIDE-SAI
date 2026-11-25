@@ -214,7 +214,7 @@ KNOBS = [
  ("rad", "--rad-fast",     "RAD_FAST",     None,   "auto|0|1", "perf: radiation fast path (one lat chunk, SW on sunlit columns only, g-point batching, exact minor-gas scan, no cloud optics; window_gq too). Default auto (since 2026-11-23): on where validated (1 GPU, wet optics, RAD_SOLAR=window_gq, the normal solve), else the chunk loop, decided per radiation driver and stated in the header; 1 = force (refuses anything else); 0 = the chunk loop (the old default)"),
  # ---- radiation engine / reference cache (docs/RADIATION.md) ----
  ("rad", "--rad-engine",   "RAD_ENGINE",   None,   "rrtmgp", "which engine solves the EVOLVED radiation call (rrtmgp = the physics, the only one in this repo)"),
- ("rad", "--rad-ref-cache", "RAD_REF_CACHE", None, "PATH|0", "per-archive-hour cache of the reference-aerosol solve and the clear-sky fields (default inputs/cache/rad_ref; bit-identical on a hit, computes+stores on a miss; 0 = off)"),
+ ("rad", "--rad-ref-cache", "RAD_REF_CACHE", None, "PATH|0", "per-archive-hour cache of the reference-aerosol solve and the clear-sky fields (default inputs/cache/rad_ref; bit-identical on a hit, computes+stores on a miss; 0 = off; always off under MET_SRC=jcm_online)"),
  ("rad", "--rad-sample-every", "RAD_SAMPLE_EVERY", None, "N", "write rad_sample_<TAG>_s<step>.npz (evolved bins, dT_rad, hour) every N radiation steps -- training data for a radiation emulator, not part of this repo (0 = off)"),
  # ---- memory / performance (numerically irrelevant; the perf switches that are
  #      not bit-identical, e.g. MICRO_WRAP_DEVICE, live in their stage's group) ----

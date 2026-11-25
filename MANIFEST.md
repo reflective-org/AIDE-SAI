@@ -624,6 +624,20 @@ any directory. What they take from the cwd is the checkpoint they read
     zonal-mean U; the 1996 → 1997 rollover (own checkpoint, rebuild) continues
     smoothly (3.8 → 4.1 m/s), but the rebuild took 356 s against 58 s for the
     first build: ~5 % of a year's wall time, not yet understood.
+  - **No radiation reference cache (2026-11-25).** The reference cache is
+    keyed by archive hour, on the premise that the anomaly's reference solve
+    depends on the hour alone. Under `jcm_online` it depends on the run's own
+    live T, so the cache is off whatever `RAD_REF_CACHE` says (the header says
+    `reference cache: OFF (...)`) and `build_ref_cache.py` refuses. Before,
+    the key's archive entry was the constant `jcm_online:<chain>`, so a
+    second run on the same cache directory (a control beside an injected run,
+    a rerun) was served the first run's reference solves: the anomaly then
+    held a (T_this - T_other) term that is not aerosol. The provenance run
+    below was hit for its first four radiation calls (hours 6-24, written by
+    the 24-h smoke run the day before); every later hour it computed itself. A
+    run on a cold cache computes exactly what it computes now, so only the
+    reuse changes. Cost: the reference solve and its MAM4 re-binning on every
+    call, ~5.6 s of the stage, about +2 h per simulated year.
   - **Stamps.** `GRID_CFG` met code 3; a RESUME between `jcm` (2) and
     `jcm_online` (3) is allowed (same grid). `PHYS_CFG` gains
     `MET_SRC=jcm_online` (appended; warns on a switch).

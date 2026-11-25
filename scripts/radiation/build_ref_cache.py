@@ -31,6 +31,8 @@ ap.add_argument('--cache', default=None, help='cache root (default: RAD_REF_CACH
 args = ap.parse_args()
 
 import coupling as C
+if C.RAD_REF_CACHE_OFF_WHY:
+    sys.exit(f'build_ref_cache: there is no reference cache under {C.RAD_REF_CACHE_OFF_WHY}')
 import radiation as R
 import rad_cache, rad_cache_build
 import jax, jax.numpy as jnp

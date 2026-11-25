@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **`jcm_online`: no radiation reference cache.** The cache is keyed by
+  archive hour, but under `MET_SRC=jcm_online` the anomaly's reference solve
+  depends on the run's own live T. The key's archive entry was the constant
+  `jcm_online:<chain>`, so a second run on the same cache (a control beside an
+  injected run, a rerun) took the first run's reference solves. The cache is
+  now off under `jcm_online` and `build_ref_cache.py` refuses it. A run on a
+  cold cache is unchanged; about +2 h per simulated year.
+
 ### Changed
 
 - **Docs: the model is one-way in every shipped linking.** README, CLAUDE.md,
