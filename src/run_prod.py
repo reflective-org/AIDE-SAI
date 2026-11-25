@@ -146,6 +146,7 @@ KNOBS = [
  ("phys", "--micro-gas-max-substeps", "MICRO_GAS_MAX_SUBSTEPS", None, "N", "MICRO=full, adaptive gas sub-steps: cap per dev step (default 16384, dev's; a binding cap is reported and aborts the run under MICRO_CAP_ABORT=1)"),
  ("phys", "--micro-cap-warnings", "MICRO_CAP_WARNINGS", None, "0|1", "MICRO=full: dev's per-cell sub-step cap warnings (default 1). 0 drops them -- they are unrolled per cell under vmap (~25x compile, ~90x step time) -- and reads the caps from the sub-step info instead (needs MICRO_GAS_SUBSTEP=adaptive with an adaptive coag solver)"),
  ("phys", "--micro-cap-abort", "MICRO_CAP_ABORT", None, "0|1", "MICRO=full, adaptive gas sub-steps: abort the run when any cell hits a gas or coag sub-step cap (default 1); 0 = report only"),
+ ("phys", "--micro-coag-scale", "MICRO_COAG_SCALE", None, "x", "MICRO=full: multiplier on the Brownian coagulation kernel in all coag solvers (sensitivity knob; default 1 = unchanged; needs a tomas-jax with make_step coag_kernel_scale)"),
  ("phys", "--micro-fion",  "MICRO_FION",   None,   "cm-3 s-1", "MICRO=full: ion-pair production for ion-induced nucleation (default 0 = off; dev's strat setup uses 10)"),
  ("phys", "--micro-mnfix-trim", "MICRO_MNFIX_TRIM", None, "0|1", "MICRO=full: MNFIX over out-of-range bins only (default 1; bit-identical to 0 and 5x faster here)"),
  ("phys", "--micro-max-wall", "MICRO_MAX_WALL", None, "s", "MICRO=full: abort the run if one step's microphysics takes longer (default 300)"),

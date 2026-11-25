@@ -691,7 +691,11 @@ PHYS_CFG = np.array([float(WET_SETTLING), float(WET_OPTICS), float(SETTLE_ENABLE
                       if os.environ.get('MICRO_GAS_SUBSTEP', 'none').lower() == 'adaptive'
                       else -1.0),
                      float(os.environ.get('TOMAS_SPECIES', 'default').strip().lower()
-                           == 'sulfate')])
+                           == 'sulfate'),
+                     # 2026-11-25, appended: MICRO=full's multiplier on the
+                     # Brownian coagulation kernel (MICRO_COAG_SCALE, default 1 =
+                     # unchanged; a sensitivity knob).
+                     float(os.environ.get('MICRO_COAG_SCALE', '1'))])
 PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'MICRO_ENGINE=emulator', 'ADV_SCHEME=sl', 'RAD_ENGINE=emulator',
                           'ADV_SCHEME=ffsl', 'MET_SRC=file', 'BC_SRC=clim', 'ADV_PASSIVE',
@@ -700,7 +704,8 @@ PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'MET_RH', 'RAD_T_FEEDBACK', 'MICRO_DT', 'MICRO_NCOAG',
                           'MICRO_COAG=adaptive', 'MICRO_FION', 'MET_SRC=jcm', 'MET_Q=met',
                           'MET_SRC=jcm_online', 'ADV_SL_RHONORM',
-                          'MICRO_COAG=heun', 'MICRO_GAS_FRAC', 'TOMAS_SPECIES=sulfate'])
+                          'MICRO_COAG=heun', 'MICRO_GAS_FRAC', 'TOMAS_SPECIES=sulfate',
+                          'MICRO_COAG_SCALE'])
 ALPHA_COND = float(os.environ.get('ALPHA_COND', '1.0'))  # H2SO4 accommodation coeff (SAI box-model value)
 # ---- diurnal OH from a solar-zenith-angle curve (Hanisco et al. 2001, Fig. 1) ----
 # DEFAULT ON. The SO2+OH chemistry uses OH(theta) read off the paper's figure
@@ -862,6 +867,41 @@ if getattr(tconfig, 'SPECIES_LAYOUT', 'default') != TOMAS_SPECIES:
 # ion-pair production [cm-3 s-1] for ion-induced nucleation. dev's strat setup
 # uses 10; the user set ions to zero on 2026-11-18 (default 0 = neutral only).
 MICRO_FION = float(os.environ.get('MICRO_FION', '0'))
+# multiplier on the Brownian coagulation kernel in all three of dev's coag
+# solvers (make_step's runtime kwarg coag_kernel_scale, jit-traced). A
+# sensitivity knob for coagulation/nucleation tests (e.g. x0.5, x2); default 1 =
+# unchanged, and then the kwarg is not passed at all, so a default run stays
+# bit-identical and builds on checkouts without it (PR #49 head 0ba8f4b). Only
+# MICRO=full with MICRO_ENGINE=full honours it: the fast engine (gpu-fast
+# 787c991) has no kernel scale (driver_fast.py refuses), and a checkout whose
+# make_step lacks the kwarg is refused at startup (_check_coag_scale).
+MICRO_COAG_SCALE = float(os.environ.get('MICRO_COAG_SCALE', '1'))
+if not MICRO_COAG_SCALE >= 0.0:
+    raise SystemExit(f"coupling: MICRO_COAG_SCALE must be >= 0, got {MICRO_COAG_SCALE:g}")
+if MICRO_COAG_SCALE != 1.0 and MICRO_MODE != 'full':
+    raise SystemExit(f"coupling: MICRO_COAG_SCALE={MICRO_COAG_SCALE:g} needs MICRO=full "
+                     f"(tomas-jax dev make_step); MICRO={MICRO_MODE} has no kernel scale")
+# step kwargs that are passed only when set (see MICRO_COAG_SCALE)
+_STEP_EXTRA = ({'coag_kernel_scale': MICRO_COAG_SCALE} if MICRO_COAG_SCALE != 1.0 else {})
+
+
+def _check_coag_scale():
+    """Refuse MICRO_COAG_SCALE != 1 on a checkout whose make_step lacks it.
+
+    dev's step function only WARNS on an unknown kwarg and then ignores it, so
+    without this a scaled run would silently run unscaled."""
+    if MICRO_COAG_SCALE == 1.0 or MICRO_MODE != 'full':
+        return
+    try:
+        from tomas_jax.solvers.condensation import _VALID_MAKE_STEP_KWARGS as _ok
+    except ImportError:
+        _ok = ()
+    if 'coag_kernel_scale' not in _ok:
+        raise SystemExit(
+            f"coupling: MICRO_COAG_SCALE={MICRO_COAG_SCALE:g} but the tomas-jax checkout "
+            f"at {TOMAS_JAX_PATH} has no make_step coag_kernel_scale. It needs tomas-jax "
+            f"branch adaptive-coag-kernel-scale (PR #49 adaptive-coag + coag_kernel_scale) "
+            f"or later; set MICRO_COAG_SCALE=1 to run this checkout.")
 # MNFIX over only the out-of-range bins (dev's own default). Bit-identical to
 # trim=False and 5x faster here, although dev's docstring advises False under
 # vmap (measured 2026-11-18: 153 vs 30 ms per 20k-cell coag step).
@@ -1473,6 +1513,7 @@ def _dev_step():
         from tomas_jax.physics.nucleation import default_nucleation_params
         from tomas_jax.physics.water_equilibrium import WATER_SCHEME_H2SO4
         from tomas_jax.solvers.condensation import make_step
+        _check_coag_scale()
         # the PR #49 arguments are passed only when set, so the default chain
         # still builds against dev 835ee24, which does not have them
         extra = {}
@@ -1502,7 +1543,7 @@ def describe_full_chain():
            if MICRO_GAS_SUBSTEP == 'adaptive' else "no gas sub-steps")
     return (f"tomas-jax dev make_step [so2_chemistry, nucleation, coagulation, "
             f"condensation], {NSTEP_MICRO} x {MICRO_DT:g} s per step: "
-            f"coag {coag}, {gas}, Riccobono+Dunne "
+            f"coag {coag}, coag kernel x{MICRO_COAG_SCALE:g}, {gas}, Riccobono+Dunne "
             f"(rho_nuc 1770, org_frac 0, fion {MICRO_FION:g}, no org/NH3), "
             f"PPM condensation (alpha {ALPHA_COND:g}), Tabazadeh H2SO4/H2O water, "
             f"sparse_density 1770, mnfix_trim {int(MICRO_MNFIX_TRIM)}, "
@@ -1540,9 +1581,11 @@ def _micro_cell(Nk, Mtot, so2, h2so4, temp, pres, rh, oh_samp):
         oh = oh_samp[(i * noh) // NSTEP_MICRO]
         if MICRO_GAS_SUBSTEP != 'adaptive':
             return step(*c[:3], XK, temp, pres, BOXVOL, rh, ALPHA_COND, MICRO_DT,
-                        oh_conc=oh, fion=MICRO_FION, nucl_params=nuc) + (c[3],)
+                        oh_conc=oh, fion=MICRO_FION, nucl_params=nuc,
+                        **_STEP_EXTRA) + (c[3],)
         Nk, Mk, Gc, info = step(*c[:3], XK, temp, pres, BOXVOL, rh, ALPHA_COND,
-                                MICRO_DT, oh_conc=oh, fion=MICRO_FION, nucl_params=nuc)
+                                MICRO_DT, oh_conc=oh, fion=MICRO_FION, nucl_params=nuc,
+                                **_STEP_EXTRA)
         d = c[3]
         d = jnp.stack([jnp.maximum(d[0], jnp.asarray(info['hit_cap'], jnp.float64)),
                        jnp.maximum(d[1], jnp.max(info['coag_dt_left'])),
@@ -2001,6 +2044,7 @@ def install_bc_source():
 
 def main():
     t0 = time.time()
+    _check_coag_scale()      # before any data is read: a refusal costs nothing
     # Clear stale savez_atomic temp files from a previous crash. The truncated
     # bytes land in the .tmp (that is the point), but a killed run leaves one
     # behind -- up to ~6 GB for the frames ckpt, and it matches the
@@ -2811,12 +2855,13 @@ def main():
             # on 2026-11-18). MICRO_DT, MICRO_NCOAG and MICRO_COAG=adaptive have
             # no single implied value (older ckpts ran other engines), so they
             # are not compared. The 2026-11-25 stamps do: code before them
-            # refused MICRO_COAG=heun and had no gas sub-steps or TOMAS_SPECIES.
+            # refused MICRO_COAG=heun and had no gas sub-steps or TOMAS_SPECIES,
+            # and every older ckpt ran the unscaled coag kernel (MICRO_COAG_SCALE 1).
             _legacy = {'RAD_T_FEEDBACK': 1.0,
                        'MET_RH': 0.0 if MET_SRC == 'cesm' else 1.0,
                        'MICRO_FION': 10.0,
                        'MICRO_COAG=heun': 0.0, 'MICRO_GAS_FRAC': -1.0,
-                       'TOMAS_SPECIES=sulfate': 0.0}
+                       'TOMAS_SPECIES=sulfate': 0.0, 'MICRO_COAG_SCALE': 1.0}
             for _i in range(_n, len(_ph_now)):
                 _k = str(PHYS_CFG_KEYS[_i])
                 if _k in _legacy and _legacy[_k] != _ph_now[_i]:

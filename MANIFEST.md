@@ -749,10 +749,25 @@ any directory. What they take from the cwd is the checkpoint they read
   Stamped append-only in `PHYS_CFG`: `MICRO_COAG=heun`, `MICRO_GAS_FRAC`
   (-1 = no gas sub-steps), `TOMAS_SPECIES=sulfate`; a RESUME from an older
   checkpoint compares them against their implied values (0, -1, 0).
-  Coagulation sensitivity on this chain needs a tomas-jax change: `make_step`
-  has no kernel scale at this commit (the fast engine's `FAST_COAG_SCALE` is
-  not ported). Nucleation sensitivity can use `make_step`'s `fn_scale` step
-  argument or `NucleationParams`, not yet exposed as knobs.
+  Nucleation sensitivity can use `make_step`'s `fn_scale` step argument or
+  `NucleationParams`, not yet exposed as knobs.
+
+- **`MICRO_COAG_SCALE`, coagulation-kernel scale (2026-11-25, user request).**
+  Default 1 (unchanged). A multiplier on the Brownian coagulation kernel in
+  all three of `make_step`'s coag solvers, passed as its runtime step argument
+  `coag_kernel_scale` (jit-traced, like `fion`; the name matches tomas-jax
+  `39535ea`, PR #33). It exists for coagulation/nucleation sensitivity tests
+  (e.g. x0.5, x2) on the adaptive-sub-stepping chain, as `FAST_COAG_SCALE`
+  served the fast engine in the frozen AIDE-SAI-link-sens tree. At 1 the
+  argument is not passed at all, so a default run is bit-identical and still
+  builds on `0ba8f4b`, which lacks it. Otherwise it needs a tomas-jax checkout
+  whose `make_step` accepts it (branch `adaptive-coag-kernel-scale`):
+  `coupling.py` refuses at startup a checkout without it (dev only warns on an
+  unknown step argument and ignores it), a negative value, and `MICRO` other
+  than `full`; `driver_fast.py` refuses it under `MICRO_ENGINE=fast` (gpu-fast
+  `787c991` has no kernel scale). Echoed in the run header (`coag kernel
+  x<scale>`) and stamped append-only in `PHYS_CFG` (`MICRO_COAG_SCALE`; implied
+  1 for older checkpoints, so a scaled RESUME warns of the seam).
 
 - **Meteorology from one source, everything else from the climatology
   (2026-11-17; now in the presets).** Both presets set `BC_SRC=clim`: only
