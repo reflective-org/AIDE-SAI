@@ -18,6 +18,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   unchanged; against a warm cache about +1 h per simulated year. The 1-year run
   `jcm_online_1yr_inj6_30NS` was hit for hours 6-24, which left a non-aerosol
   term in its first 2-3 weeks of `dT_rad`, `hr_kday` and ARF (MANIFEST.md).
+- **RESUME no longer leaves a seam.** The advection's boundary values
+  (`qfroz`: polar-cap freeze target, open-face inflow) were not checkpointed,
+  so the first resumed step used the hour-0 (January) values: in
+  `ccmi2030_ctrl` M/M0 dropped 0.5289 -> 0.5271 and the SO2 burden 4.6 % at the
+  resume. RESUME now rebuilds them at the checkpoint hour; a resumed run's
+  aerosol and gas state is bit-identical to an uninterrupted one. Fresh runs
+  are unchanged bit for bit. Runs resumed before this fix have a seam at the
+  resume step.
 
 ### Changed
 

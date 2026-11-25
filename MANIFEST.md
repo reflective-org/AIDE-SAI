@@ -462,6 +462,27 @@ any directory. What they take from the cwd is the checkpoint they read
 
 ## Code state — why the defaults are what they are
 
+- **RESUME continues the advection's boundary values (2026-11-25).**
+  `qfroz` -- the polar-cap freeze target (all levels, |lat| > LAT_FREEZE) and,
+  with `ADV_WCONT`, the open top/bottom faces' inflow reservoir -- is built
+  from the hour-0 IC and refreshed at each step's end; it was not in the state
+  checkpoint and RESUME did not refresh it, so the first resumed step advected
+  against the January hour-0 polar cap and face inflow. Seen in
+  `ccmi2030_ctrl` (resumed at step 2165): M/M0 0.5289 -> 0.5271, SO2 burden
+  -4.6 %, decaying over the following weeks; every resumed run before this
+  date has such a seam at its resume step (incl. the year-2 RESUME of the
+  2-year reference runs). Now `refresh_qfroz(qfroz, t)` does the step-end
+  refresh and RESUME calls it once at the checkpoint hour. **Test** (CESM
+  numerical, 6 Tg/yr +-30 deg, 240 h straight vs 120 h + RESUME to 240 h, GPUs
+  2/3): num, mas, SO2, H2SO4 and every budget term of the resumed run are
+  bit-identical to the uninterrupted one (before: num 2.2e-3, mas 1.5e-3 rel,
+  timeseries Nmin 33 %); fresh runs are bit-identical to the code before the
+  fix. The only residual is in the radiation diagnostics (`hr_kday` 4e-11,
+  `dT_rad` 6e-12 rel at 240 h; first at 1e-14 in `arf_toa` 96 h after the
+  resume, with every reference-cache read a hit), consistent with per-process
+  XLA autotuning in the radiation solve; under `RAD_T_FEEDBACK=0` it does not
+  reach the aerosol.
+
 - **Performance switches (2026-11-23; default ON since 2026-11-23, were
   opt-in at 0).** `RAD_FAST`, `MICRO_WRAP_DEVICE`, `MAM4_BIN_DEVICE`,
   `ADV_SL_DEVICE_RESAMPLE`, `CKPT_ASYNC`. Each is read once at import with
@@ -537,10 +558,10 @@ any directory. What they take from the cwd is the checkpoint they read
     except the clip sums (<= 1e-15), budget closure unchanged.
   - Known, not caused by any switch: the final num/mas of a CESM run differ
     run to run at <= 2.5e-12 in a few columns (GPU nondeterminism in the
-    microphysics), and a RESUME does not reproduce an uninterrupted run
-    (observed in the perf tests, `ckr*_` runs: Nburden ~3e-4 rel after the
-    first resumed step, with or without CKPT_ASYNC; likely some carried
-    advection state is not in the checkpoint) -- not yet investigated.
+    microphysics). The RESUME mismatch also seen in those tests (`ckr*_`
+    runs: Nburden ~3e-4 rel after the first resumed step) was the
+    un-checkpointed `qfroz`, fixed 2026-11-25 (§ RESUME continues the
+    advection's boundary values).
 
 - **The live JCM linking (2026-11-20; `configs/jcm_online_numerical.env`,
   `MET_SRC=jcm_online`; the code dates from 2026-11-18).** `MET_SRC=jcm_online`
