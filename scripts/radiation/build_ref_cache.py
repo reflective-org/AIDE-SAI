@@ -30,6 +30,9 @@ ap.add_argument('--only', default='all', choices=['ref', 'clear', 'all'])
 ap.add_argument('--cache', default=None, help='cache root (default: RAD_REF_CACHE / inputs/cache/rad_ref)')
 args = ap.parse_args()
 
+if os.environ.get('MET_SRC', 'cesm').lower() == 'jcm_online':
+    sys.exit('build_ref_cache: there is no reference cache under MET_SRC=jcm_online '
+             '(the meteorology is integrated live; coupling.RAD_REF_CACHE_OFF_WHY)')
 import coupling as C
 import radiation as R
 import rad_cache, rad_cache_build

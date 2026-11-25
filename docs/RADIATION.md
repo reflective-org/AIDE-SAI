@@ -99,6 +99,12 @@ those fields once per archive hour, stores them in float64 and serves them
 afterwards. A hit is the same array the loop would have computed, so the run is
 bit-identical, and the stage drops to one solve.
 
+Under `MET_SRC=jcm_online` the cache is **off** whatever `RAD_REF_CACHE` says:
+the meteorology is integrated live, so the reference solve depends on the run,
+not on an archive hour, and a shared cache would hand one run another run's
+reference (`MANIFEST.md`, the `jcm_online` entry). `MET_SRC=file` passes its own
+band T, which bypasses the cache per call.
+
 `RAD_REF_CACHE` (default `inputs/cache/rad_ref`; `0` disables). One `.npz` per
 absolute archive hour under `<root>/rad_ref_<key>/h<hour:06d>.npz`, `key.json`
 beside them, gitignored. The key hashes everything that determines the fields:

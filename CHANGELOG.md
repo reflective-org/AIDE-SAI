@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
+- **`jcm_online`: no radiation reference cache.** The cache is keyed by
+  archive hour, but under `MET_SRC=jcm_online` the anomaly's reference solve
+  depends on the run's own live T. The key's archive entry was the constant
+  `jcm_online:<chain>`, so a second run on the same cache (a control beside an
+  injected run, a rerun) took the first run's reference solves. The cache is
+  now off under `jcm_online` (`rad_cache.RefCache` itself refuses a live met
+  source) and `build_ref_cache.py` refuses it. A run on a cold cache is
+  unchanged; against a warm cache about +1 h per simulated year. The 1-year run
+  `jcm_online_1yr_inj6_30NS` was hit for hours 6-24, which left a non-aerosol
+  term in its first 2-3 weeks of `dT_rad`, `hr_kday` and ARF (MANIFEST.md).
 - **RESUME no longer leaves a seam.** The advection's boundary values
   (`qfroz`: polar-cap freeze target, open-face inflow) were not checkpointed,
   so the first resumed step used the hour-0 (January) values: in

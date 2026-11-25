@@ -854,6 +854,17 @@ RAD_REF    = os.environ.get('RAD_REF', '').lower()
 RAD_REF_EVERY = int(os.environ.get('RAD_REF_EVERY', '1'))
 RAD_REF_CACHE = os.environ.get('RAD_REF_CACHE',
                                os.path.join(_paths.INPUTS, 'cache', 'rad_ref'))
+# Why the cache is off whatever RAD_REF_CACHE says ('' = it is not). The cache
+# is keyed by archive hour, which assumes the reference solve depends on the
+# hour alone. Under MET_SRC=jcm_online the meteorology is integrated live, so
+# the reference solve depends on the run's own T, and jcm-strat on GPU is not
+# deterministic run to run: a second run would be served the first run's
+# reference solves under the constant key 'jcm_online:<chain>' (2026-11-25;
+# MANIFEST.md). MET_SRC=file needs no entry: it passes its T_band, which
+# bypasses the cache per call.
+RAD_REF_CACHE_OFF_WHY = ('MET_SRC=jcm_online: the meteorology is integrated live, '
+                         'so the reference solve depends on the run, not on an '
+                         'archive hour' if MET_SRC == 'jcm_online' else '')
 RAD_SAMPLE_EVERY = int(os.environ.get('RAD_SAMPLE_EVERY', '0'))
 if RAD_ENGINE == 'emulator' or RAD_REF:
     raise SystemExit("RAD_ENGINE=emulator / RAD_REF: the radiation emulator is not part "
@@ -1952,12 +1963,16 @@ def main():
                                         mmid_kg=MMID, rho_dry=RHO_AER,
                                         solar_window_h=STEP_HOURS * RAD_EVERY,
                                         split_only=(RAD_MODE == 'flux'))
-        if RAD_REF_CACHE not in ('0', ''):
+        if RAD_REF_CACHE not in ('0', '') and not RAD_REF_CACHE_OFF_WHY:
             import rad_cache
             rad.ref_cache = rad_cache.RefCache(RAD_REF_CACHE, rad.cache_key(**rad_ref_src()))
             print(f"  reference cache: {rad.ref_cache.dir}", flush=True)
+        elif RAD_REF_CACHE_OFF_WHY:
+            print(f"  reference cache: OFF ({RAD_REF_CACHE_OFF_WHY}; "
+                  f"RAD_REF_CACHE={RAD_REF_CACHE} ignored)", flush=True)
         print(f"  RAD_ENGINE={RAD_ENGINE} RAD_REF={RAD_REF or '-'} "
-              f"RAD_REF_EVERY={RAD_REF_EVERY} RAD_REF_CACHE={RAD_REF_CACHE} "
+              f"RAD_REF_EVERY={RAD_REF_EVERY} "
+              f"RAD_REF_CACHE={'off(' + MET_SRC + ')' if RAD_REF_CACHE_OFF_WHY else RAD_REF_CACHE} "
               f"RAD_SAMPLE_EVERY={RAD_SAMPLE_EVERY} "
               f"RAD_SOLAR={rad.solar_mode} (window {rad.solar_window_h:g} h"
               + (f", RAD_SOLAR_ALPHA={rad.alpha:g}" if rad.solar_mode == 'window_blend' else "")
