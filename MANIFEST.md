@@ -14,12 +14,15 @@ learned emulator. The end state is model-agnostic coupling: other meteorology
 sources (including emulated dycores, which would close the circulation feedback
 the current setup lacks) and other aerosol schemes (CARMA, MAM, GLOMAP).
 
-**What ships today is three linkings, all fully numerical** (§ Linkings are
+**What ships today is four linkings, all fully numerical** (§ Linkings are
 presets): CESM2 meteorology on the f09 grid (`configs/cesm_numerical.env`, the default),
 jcm-strat meteorology on the JCM grid read from the AL7h70 chain's output
 (`configs/jcm_numerical.env`), and the same jcm-strat model run live beside the
-coupler (`configs/jcm_online_numerical.env`). All use the
-CESM climatology for every non-wind field, `tomas_jax.fast` microphysics,
+coupler (`configs/jcm_online_numerical.env`), plus CESM2 meteorology with
+tomas-jax dev's adaptive-sub-stepping microphysics
+(`configs/cesm_adaptive_substep.env`, 2026-11-25). All use the
+CESM climatology for every non-wind field, `tomas_jax.fast` microphysics (except
+`cesm_adaptive_substep`: tomas-jax `make_step`, `MICRO_ENGINE=full`),
 semi-Lagrangian transport and RRTMGP + Mie radiation. Every default,
 measurement and caveat below refers to that stack unless it says otherwise.
 
@@ -37,9 +40,9 @@ The seams that make a slot swappable are deliberate and worth preserving:
 | boundary climatology | `BC_SRC=cesm\|clim` + `CLIM_FILE` | `clim`: monthly CESM means on the model grid (`src/met/bc_clim.py`) |
 | aerosol IC/BC source | `AER_SRC=mam4\|carma` | `mam4` (the default): CESM's MAM4 output fields binned onto the TOMAS bins. This is NOT the MAM4-JAX package |
 | transport | `ADV_SCHEME=sl\|lr\|ffsl\|fast` | `sl`, K=12 |
-| microphysics | `MICRO_ENGINE=fast\|full`, swapped into `coupling.py` by `driver_fast.py` at import instead of branched inside it — which is why the driver is a separate file | `fast`: `tomas_jax.fast` (tomas-jax gpu-fast `787c991`) |
+| microphysics | `MICRO_ENGINE=fast\|full`, swapped into `coupling.py` by `driver_fast.py` at import instead of branched inside it — which is why the driver is a separate file | `fast`: `tomas_jax.fast` (tomas-jax gpu-fast `787c991`); `cesm_adaptive_substep`: `full`, tomas-jax `make_step` at PR #49 `0ba8f4b` (`models/tomas-jax-dev`) |
 | radiation | `RAD_ENGINE=rrtmgp`; `RAD=0` drops it and the `jax-rrtmgp` dependency entirely; `RAD_REF_CACHE` serves the archive-only half of the stage from disk | RRTMGP + Mie (jax-rrtmgp `99d2d71` + patch) |
-| which checkout fills a code slot | `#@submodule` lines in the preset (`TOMAS_JAX_PATH`, `RRTMGP_PATH`, `JCM_STRAT_PATH`) | `models/tomas-jax`, `models/jax-rrtmgp`; `models/jcm-strat` (with its `external/jax-gcm`) for `MET_SRC=jcm_online` only |
+| which checkout fills a code slot | `#@submodule` lines in the preset (`TOMAS_JAX_PATH`, `RRTMGP_PATH`, `JCM_STRAT_PATH`) | `models/tomas-jax` (or `models/tomas-jax-dev` for `cesm_adaptive_substep`), `models/jax-rrtmgp`; `models/jcm-strat` (with its `external/jax-gcm`) for `MET_SRC=jcm_online` only |
 
 A new scheme goes in behind one of these selectors; a new combination of
 schemes is a new preset (next section), not a branch.
@@ -57,13 +60,15 @@ hard-coded launcher presets that are visible only by diffing branches.
 | `cesm_numerical` (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz` | the 2-year CESM runs `fast_2yr_inj6_30NS` / `fast_2yr_ctrl`, bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`; § Code state); with the perf defaults (on) within run-to-run GPU noise; `ADV_SL_RHONORM=1` (default since PR #4, merged into dev 2026-11-24) is a real change, § sl_lr level air mass |
 | `jcm_numerical` | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`, `JCM_DIR` at its default `/data/JCM_stripped/jcm-strat/runs/p31/p31_AL7h70`) | T63 Gaussian 96 × 192, 47 levels 1.01–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz` (the CESM climatology regridded by `scripts/met/regrid_clim_to_grid.py`) | the 2-year JCM run `jcm_1yr_inj6_30NS`, bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`); with the perf defaults (on) within run-to-run GPU noise; `ADV_SL_RHONORM=1` (default since PR #4, merged into dev 2026-11-24) is a real change, § sl_lr level air mass |
 | `jcm_online_numerical` | jcm-strat AL7h **run live**, 6-hourly (`MET_SRC=jcm_online`; code from the `jcm-strat` slot, `models/jcm-strat` f3c2070; started from the same `JCM_DIR` chain) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19) — **statistically, not bitwise**: jcm-strat on GPU is not deterministic run to run (§ Code state); that run had `ADV_SL_RHONORM=0` and the perf switches at 0, and their defaults (on) are untested on this linking (`RAD_FAST` adds ~2 GB on the GPU jcm-strat shares) |
+| `cesm_adaptive_substep` | as `cesm_numerical` | as `cesm_numerical` | as `cesm_numerical` | no runs reproduced yet (added 2026-11-25). The microphysics slot is tomas-jax `make_step` (`MICRO_ENGINE=full`) from `models/tomas-jax-dev` at the head of tomas-jax PR #49 (`0ba8f4b`, branch `adaptive-coag`): heun_adaptive coagulation and adaptive gas sub-steps (§ Code state, "Adaptive-sub-stepping microphysics"). Re-pin to the merge commit once PR #49 lands |
 
-All three also set `BC_SRC=clim`, `INIT_BIN=so4`, `ADV_VPOS=1` and, since
+All four also set `BC_SRC=clim`, `INIT_BIN=so4`, `ADV_VPOS=1` and, since
 2026-11-24, `FRAME3D=1 FRAME3D_EVERY=21` (output-only: the full 3-D state every
 5.25 days, rotating through the four UTC hours, ~33 GB/yr on f09 and ~22 GB/yr on
 T63; the JCM runs above wrote none, and without 3-D frames no time-mean map or
 column field can be made afterwards), and pin the
-same tomas-jax and jax-rrtmgp slots; `jcm_online_numerical` also pins
+same jax-rrtmgp slot and, except `cesm_adaptive_substep` (`models/tomas-jax-dev`),
+the same tomas-jax slot; `jcm_online_numerical` also pins
 `jcm-strat` and sets three machine paths (`JCM_PY`, `JCM_CACHE`,
 `JCM_SCRATCH`). A dry run of each preset with those runs' scenario resolves the knob
 values their logs recorded (the `cesm_numerical` preset additionally states
@@ -123,8 +128,10 @@ belongs in the presets.
 **Which tomas-jax.** A slot is always a git submodule pinned to an exact commit,
 never a vendored copy. A different version of a dependency — e.g. tomas-jax
 `dev` (`835ee24`) for `MICRO_ENGINE=full` — goes in as a SECOND submodule path
-(say `models/tomas-jax-dev`) plus a new preset whose `tomas-jax` slot points
-there; that is how a preset chooses its submodule.
+plus a new preset whose `tomas-jax` slot points there; that is how a preset
+chooses its submodule. `models/tomas-jax-dev` (tomas-jax PR #49 head `0ba8f4b`,
+branch `adaptive-coag`; 2026-11-25) is the first such path, pinned by
+`cesm_adaptive_substep`.
 `scripts/validation/test_configs.py` (in CI) checks that every preset parses
 with the launcher's own loader, that it pins exactly the slots it needs, that
 each pin equals the commit the superproject records for that submodule (the
@@ -244,6 +251,7 @@ third submodule, `models/jcm-strat`, is needed only by `jcm_online_numerical`;
 | repo | required state | why | symptom if skipped |
 |---|---|---|---|
 | `models/tomas-jax` | `787c991`, branch `gpu-fast` | the `tomas_jax.fast` reduced model is the microphysics of both linkings (user decision 2026-11-18). `dev`'s `make_step` is built lazily, so `MICRO_ENGINE=full` fails only when used; `settling.h2so4_equilibrium_wt` falls back to `tomas_jax.fast.water` for the Tabazadeh fit | `cannot import tomas_jax.fast` from tomas_fast.py (and the pin check refuses first) |
+| `models/tomas-jax-dev` | `0ba8f4b`, branch `adaptive-coag` (tomas-jax PR #49: dev `835ee24` + 8 commits) | `cesm_adaptive_substep` only: `make_step(coag_solver='heun_adaptive', gas_substep='adaptive', cap_warnings=...)` and `TOMAS_SPECIES` exist from PR #49 on; it has no `tomas_jax.fast` | the pin check refuses that preset; the other presets do not need it |
 | `models/jax-rrtmgp` | `99d2d71` + `patches/jax-rrtmgp-zenith.patch` | `radiation.py` passes zenith per column, `(nlat, nlon, 1)`; upstream `sw_cell_source` assumes a scalar and broadcasts it against the `(nlat, nlon)` TOA flux | shape blow-up in the SW solve on the first `RAD=1` step |
 
 The patch is one hunk against `99d2d71` and is the only carried modification to
@@ -693,6 +701,58 @@ any directory. What they take from the cwd is the checkpoint they read
   0.0 wt% over 72k random T/RH), so settling, the optics and the microphysics'
   water uptake agree under either engine. `MICRO_ENGINE=full`, `MICRO_DT`,
   `MICRO_NCOAG`, `MICRO_COAG=adaptive` and `MICRO_FION` are in `PHYS_CFG`.
+
+- **Adaptive-sub-stepping microphysics, preset `cesm_adaptive_substep`
+  (2026-11-25, user request).** The `full` chain above with tomas-jax PR #49
+  (`models/tomas-jax-dev`, `0ba8f4b`), configured as the PR's "Recommended
+  settings" (tomas-jax `docs/gas_substep.md`) and GPU benchmarks
+  (`docs/gpu_deployment.md`). New knobs, all default off, so every other
+  preset and a bare `MICRO=full` run is unchanged:
+  * `MICRO_COAG=heun` → `coag_solver='heun_adaptive'`: second-order, error
+    controlled (rtol 3e-3, atol 1e-6 of total N, dev's defaults); the lowest
+    L1 N error in the PR's comparison (0.016 vs 0.019 for euler_adaptive).
+  * `MICRO_GAS_SUBSTEP=adaptive`, `MICRO_GAS_FRAC=0.1`,
+    `MICRO_GAS_MAX_SUBSTEPS` (dev 16384; preset 65536, the PR's GPU value) →
+    `gas_substep='adaptive'`. Without it the nucleation gas clamp fires at
+    >= 1 ppmv SO2 and N(>3 nm) can come out up to 50x too high, i.e. in the
+    plume. `split_chemistry` is not passed: with adaptive gas sub-steps it
+    raises (the PR's snippet lists it; the adaptive path always splits).
+  * `MICRO_DT=360` in the preset (60 dev steps per 6 h step, one OH sample
+    each), the PR's GPU outer step; both the gas chain and the coagulation
+    sub-step adaptively inside it.
+  * `MICRO_CAP_WARNINGS=0`: dev's per-cell cap callbacks are unrolled per cell
+    under vmap (8192 cells: compile 217 vs 9 s, step 5.3 vs 0.06 s). The caps
+    are then read from the step's sub-step info (`return_substep_info=True`,
+    only on the adaptive gas path, so `0` with an adaptive coag solver and no
+    gas sub-steps is refused: a coag cap would truncate silently). Each step
+    prints `[full] ... cap hits: gas N coag N cells`, the mean/max gas
+    sub-steps and the max `k_nuc dt_sub`; with `MICRO_CAP_ABORT=1` (default) a
+    hit aborts the run (`MicroCapHit`).
+  * `TOMAS_SPECIES=sulfate`: tomas-jax's reduced SO4/NH4/H2O layout (3 Mk
+    columns, not 44), round-off identical for this chain (tomas-jax
+    `tests/test_sulfate_only.py`). Read by tomas-jax at its first import;
+    `coupling.py` refuses a value the checkout does not run.
+  * `MICRO_SORT=prod`, `CELL_CHUNK=4096`: cells ordered by SO2 production
+    (k1 OH SO2, half-decade tiers hottest first, T within a tier) and run in
+    4096-cell chunks. A vmapped adaptive step runs every cell of a chunk in
+    lockstep with its slowest one; in grid order with 50k chunks one sunlit
+    injection cell would hold a whole chunk (estimated 600-1000 s, over
+    `MICRO_MAX_WALL`). Cost only: per-cell results do not depend on
+    chunk-mates (max rel. difference 0 across orderings in the PR), so not
+    stamped.
+  * `MICRO_FION=0` stays (user decision 2026-11-18); the PR validated at 10.
+  * Measured (48 h, 6 Tg SO2/yr mirrored single cells at ±30°, lon 180,
+    55 hPa, one H200, 2026-11-25): microphysics 26-38 s per 6 h step, ~33 s
+    per step in all, no cap hit, injection cell up to ~17,000 gas sub-steps
+    per step (cap 65536), budget closure ~2e-16. Validated by tomas-jax on
+    the AFGL tropical grid only.
+  Stamped append-only in `PHYS_CFG`: `MICRO_COAG=heun`, `MICRO_GAS_FRAC`
+  (-1 = no gas sub-steps), `TOMAS_SPECIES=sulfate`; a RESUME from an older
+  checkpoint compares them against their implied values (0, -1, 0).
+  Coagulation sensitivity on this chain needs a tomas-jax change: `make_step`
+  has no kernel scale at this commit (the fast engine's `FAST_COAG_SCALE` is
+  not ported). Nucleation sensitivity can use `make_step`'s `fn_scale` step
+  argument or `NucleationParams`, not yet exposed as knobs.
 
 - **Meteorology from one source, everything else from the climatology
   (2026-11-17; now in the presets).** Both presets set `BC_SRC=clim`: only

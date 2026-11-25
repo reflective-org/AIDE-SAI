@@ -10,10 +10,11 @@ swappable slot (meteorology/dycore, boundary climatology, transport, aerosol
 microphysics, settling, radiation), and each slot is filled by a numerical
 scheme or, in future, a learned emulator. A **linking** is one choice for every
 slot plus the exact submodule commits behind it, written down as a preset file
-in [`configs/`](./configs/README.md). This repository ships three linkings, all
+in [`configs/`](./configs/README.md). This repository ships four linkings, all
 fully numerical: CESM2 meteorology on the CESM f09 grid (the default),
 jcm-strat meteorology on the JCM T63 grid read from a finished run, and the
-same jcm-strat model run live beside the coupler. The end goal is model-agnostic
+same jcm-strat model run live beside the coupler, plus the CESM linking with
+tomas-jax's adaptive-sub-stepping microphysics. The end goal is model-agnostic
 coupling: other dycores, emulated ones included, and other aerosol schemes
 (CARMA, MAM, GLOMAP).
 
@@ -123,7 +124,7 @@ the selectors that differ between linkings. Everything else stays at the
 | boundary climatology | `BC_SRC` (+ `CLIM_FILE`) | `clim`: monthly CESM climatology on the model grid (`src/met/bc_clim.py`). `cesm`: the hourly archive (module default) | All presets use `clim`. The climatology is built by `scripts/met/make_bc_climatology.py` and regridded by `scripts/met/regrid_clim_to_grid.py` |
 | aerosol IC/BC source | `AER_SRC` | `mam4`: CESM's MAM4 mode fields binned onto the 40 TOMAS bins (default; this is *not* the MAM4-JAX package). `carma`: a CARMA output file | `mam4` in all presets |
 | transport | `ADV_SCHEME` | `sl`: semi-Lagrangian split, `ADV_SL_K=12` (default). `lr`: Lin-Rood flux form at CFL sub-steps. `ffsl`: `lr` at large Courant number. `fast`: advective form | `sl` in all presets. Validate changes at `ADV_F32=1 ADV_CFL=0.5` |
-| aerosol microphysics | `MICRO_ENGINE` + the `tomas-jax` slot | `fast`: `tomas_jax.fast`, tomas-jax `gpu-fast` 787c991 (default). `full`: tomas-jax dev's `make_step` | `fast` in all presets. `full` needs a dev checkout, so it needs a preset that has one (see [configs/README.md](./configs/README.md)). Planned: a TOMAS emulator (not part of this repo yet; it would fill this slot behind `MICRO_ENGINE`), then CARMA, MAM, GLOMAP |
+| aerosol microphysics | `MICRO_ENGINE` + the `tomas-jax` slot | `fast`: `tomas_jax.fast`, tomas-jax `gpu-fast` 787c991 (default). `full`: tomas-jax dev's `make_step` | `fast` in all presets but `cesm_adaptive_substep`, which runs `full` from `models/tomas-jax-dev` (tomas-jax PR #49). `full` needs a dev checkout, so it needs a preset that has one (see [configs/README.md](./configs/README.md)). Planned: a TOMAS emulator (not part of this repo yet; it would fill this slot behind `MICRO_ENGINE`), then CARMA, MAM, GLOMAP |
 | settling | `SETTLE` (`WET_SETTLING`) | closed-form gravitational settling (`src/settling/settling.py`) | On in all presets. It is the model's one true aerosol sink |
 | radiation | `RAD_ENGINE` + the `jax-rrtmgp` slot (`RAD=0` turns it off) | `rrtmgp`: RRTMGP + Mie optics, solar geometry `window_gq` at 3 nodes over the trailing 6 h, `RAD_MODE=anomaly` | `rrtmgp` in all presets. Planned: a radiation emulator (not part of this repo yet; it would fill this slot behind `RAD_ENGINE`) |
 
@@ -132,16 +133,18 @@ engine into `coupling.py` at import rather than branching inside it, and the met
 source declares the grid, so nothing downstream assumes f09. Keep it that way.
 A change that makes a slot harder to swap needs saying so in its PR.
 
-## The three linkings
+## The linkings
 
 | preset | meteorology | grid | climatology (`CLIM_FILE`) | provenance |
 |---|---|---|---|---|
 | [`cesm_numerical`](./configs/cesm_numerical.env) (default) | CESM2 h1 hourly U/V/OMEGA/T (`MET_SRC=cesm`) | f09, 192 × 288, 24 levels 1.2–143 hPa | `inputs/bc_clim/bc_clim.npz`, monthly 1996–2014 CESM means | reproduces the 2-year runs `fast_2yr_inj6_30NS` and `fast_2yr_ctrl` (2026-11-18/19) bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`; the perf switches default on since 2026-11-23, within run-to-run GPU noise; `ADV_SL_RHONORM` defaults to 1 since PR #4 (dev, 2026-11-24), which removes a transport drift those runs carry, see `MANIFEST.md`) |
 | [`jcm_numerical`](./configs/jcm_numerical.env) | jcm-strat AL7h70, 6-hourly (`MET_SRC=jcm`) | T63 Gaussian, 96 × 192, 47 levels 1.0–137.8 hPa | `inputs/bc_clim/bc_clim_jcm.npz`, the same climatology regridded onto the JCM grid | reproduces the 2-year run `jcm_1yr_inj6_30NS` (2026-11-18..20) bit-identically with `ADV_SL_RHONORM=0` and the perf switches off (`RAD_FAST=0 MICRO_WRAP_DEVICE=0 MAM4_BIN_DEVICE=0 ADV_SL_DEVICE_RESAMPLE=0 CKPT_ASYNC=0`) |
 | [`jcm_online_numerical`](./configs/jcm_online_numerical.env) | jcm-strat AL7h **run live** beside the coupler, 6-hourly (`MET_SRC=jcm_online`; `models/jcm-strat` f3c2070) | as `jcm_numerical` | as `jcm_numerical` | the knob values and pins of the 1-year run `jcm_online_1yr_inj6_30NS` (2026-11-19). **Not bit-reproducible**: jcm-strat on GPU is not deterministic run to run, so this linking is validated statistically (`scripts/validation/validate_jcm_online.py`), never bitwise. That run had `ADV_SL_RHONORM=0` and the perf switches at 0; their defaults (on) are untested on this linking |
+| [`cesm_adaptive_substep`](./configs/cesm_adaptive_substep.env) | as `cesm_numerical` | as `cesm_numerical` | as `cesm_numerical` | added 2026-11-25, no runs reproduced yet. Microphysics is tomas-jax `make_step` (`MICRO_ENGINE=full`, `models/tomas-jax-dev` at tomas-jax PR #49 `0ba8f4b`) with heun_adaptive coagulation and adaptive gas sub-steps; ~33 s per 6 h step on one GPU in a 48 h injected test (see `MANIFEST.md`) |
 
-All three linkings share the rest of the stack. Microphysics is `tomas_jax.fast`
-(`MICRO_ENGINE=fast`, tomas-jax `gpu-fast` 787c991). Transport is
+All linkings share the rest of the stack. Microphysics is `tomas_jax.fast`
+(`MICRO_ENGINE=fast`, tomas-jax `gpu-fast` 787c991), except in
+`cesm_adaptive_substep`. Transport is
 semi-Lagrangian, `sl` K=12. Radiation is RRTMGP + Mie (jax-rrtmgp 99d2d71 plus
 `patches/jax-rrtmgp-zenith.patch`), with `RAD_SOLAR=window_gq` at 3 nodes,
 trailing, `RAD_MODE=anomaly` and `RAD_T_FEEDBACK=0`. RH is computed over liquid

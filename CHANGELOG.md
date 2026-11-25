@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Preset `cesm_adaptive_substep`: CESM linking with tomas-jax's adaptive
+  sub-stepping microphysics (tomas-jax PR #49).** A second tomas-jax submodule
+  path, `models/tomas-jax-dev` (`0ba8f4b`, branch `adaptive-coag`), fills the
+  microphysics slot with `make_step` (`MICRO_ENGINE=full`). New `MICRO=full`
+  knobs, all default off: `MICRO_COAG=heun`, `MICRO_GAS_SUBSTEP`,
+  `MICRO_GAS_FRAC`, `MICRO_GAS_MAX_SUBSTEPS`, `MICRO_CAP_WARNINGS`,
+  `MICRO_CAP_ABORT`, `MICRO_SORT`, `TOMAS_SPECIES`. Sub-step cap hits are
+  reported every step and abort the run. Three `PHYS_CFG` stamps appended.
+  Other presets unchanged.
+
 ### Changed
 
 - **Docs: the model is one-way in every shipped linking.** README, CLAUDE.md,

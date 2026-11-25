@@ -28,7 +28,7 @@ coupled model runs: the knob values that differ between linkings and, via
 patch) filling each model slot. `src/run_prod.py --preset NAME` (default
 `cesm_numerical`; `none` = coupling.py's module defaults) refuses to start if a slot's
 checkout is not at its pin, and echoes the preset, the pins and every resolved
-value. Three linkings ship, all numerical:
+value. Four linkings ship, all numerical:
 
 - `cesm_numerical` (default): CESM2 h1 hourly winds/T on the f09 grid, the monthly CESM
   climatology for everything else, `tomas_jax.fast` microphysics
@@ -45,6 +45,10 @@ value. Three linkings ship, all numerical:
   `JCM_CACHE`, `JCM_SCRATCH`). jcm-strat on GPU is **not deterministic run to
   run**, so this linking is validated statistically
   (`scripts/validation/validate_jcm_online.py`), never bitwise.
+- `cesm_adaptive_substep`: as `cesm_numerical`, but the microphysics is tomas-jax
+  `make_step` (`MICRO_ENGINE=full`) from a second tomas-jax path,
+  `models/tomas-jax-dev` (PR #49 head 0ba8f4b): heun_adaptive coagulation and
+  adaptive gas sub-steps, sub-step caps read per step and fatal on a hit.
 
 A new linking — including a mixed numerical/emulated one — is a new preset,
 plus any new slot implementation behind an existing selector. A different

@@ -123,6 +123,14 @@ sea salt are not carried, and ions are off.
   the physics-stages table apply: `MICRO_DT` (60 s, must divide the step),
   `MICRO_NCOAG` (1), `MICRO_COAG` (`fixed`), `MICRO_FION` (0), `MICRO_MNFIX_TRIM`
   (1), `MICRO_MAX_WALL` (300 s abort), `MICRO_GPUS` (1), `CELL_CHUNK` (50000).
+  From tomas-jax PR #49 on (preset `cesm_adaptive_substep`, `models/tomas-jax-dev`)
+  also `MICRO_COAG=heun` (heun_adaptive), `MICRO_GAS_SUBSTEP` (`none`; `adaptive`
+  = adaptive gas sub-steps), `MICRO_GAS_FRAC` (0.1), `MICRO_GAS_MAX_SUBSTEPS`
+  (16384), `MICRO_CAP_WARNINGS` (1; 0 reads the caps from the sub-step info),
+  `MICRO_CAP_ABORT` (1), `MICRO_SORT` (`none`; `prod` = production-sorted
+  chunks, cost only) and `TOMAS_SPECIES` (`default`; `sulfate` = the reduced
+  layout, read by tomas-jax at import). MANIFEST.md, "Adaptive-sub-stepping
+  microphysics", has the why.
 - `ALPHA_COND` (H2SO4 accommodation coefficient, 1.0) is read by both engines.
 - `MICRO_SUBSTEPS` is gone and exits if set, so an old command line cannot
   silently mean something else. `N_COAG_SUBSTEPS` serves only the legacy
