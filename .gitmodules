@@ -9,3 +9,7 @@
 	path = models/jcm-strat
 	url = https://github.com/reflective-org/jcm-strat
 	branch = dev
+[submodule "models/tomas-jax-dev"]
+	path = models/tomas-jax-dev
+	url = https://github.com/reflective-org/tomas-jax
+	branch = adaptive-coag

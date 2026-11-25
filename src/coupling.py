@@ -141,7 +141,8 @@ from tomas_jax.core.config import xk_boundaries, NBINS, ICOMP
 from tomas_jax.solvers.diffrax import coag_euler_step
 # full-chain microphysics (SAI): gas indices + the individual process steps.
 # NOTE the Gc index quirk: SRTSO4 slot holds H2SO4 VAPOR in the gas array,
-# and SRTSO2 (=43, the slot water uses in Mk) holds SO2.
+# and SRTSO2 (=43, the slot water uses in Mk; 2 under TOMAS_SPECIES=sulfate)
+# holds SO2.
 from tomas_jax.core.config import (N_GAS_SPECIES, SRTSO4, SRTSO2, SRTH2O,
                                    MW_H2SO4, MW_SO2, KB, ICOMP_NODIAG)
 # MICRO=full is tomas-jax dev's own make_step (dev 835ee24; needs a dev checkout
@@ -677,7 +678,27 @@ PHYS_CFG = np.array([float(WET_SETTLING), float(WET_OPTICS), float(SETTLE_ENABLE
                      # 0 reproduces the runs made before PR #4, 2026-11-24). -1 when the
                      # transport is not sl.
                      (float(os.environ.get('ADV_SL_RHONORM', '1') != '0')
-                      if ADV_SCHEME == 'sl' else -1.0)])
+                      if ADV_SCHEME == 'sl' else -1.0),
+                     # 2026-11-25 (tomas-jax PR #49, preset cesm_adaptive_substep),
+                     # appended: MICRO=full's coag solver is heun_adaptive
+                     # (MICRO_COAG=heun; the MICRO_COAG=adaptive stamp above stays
+                     # 0 for it); the adaptive gas sub-step criterion f (-1 = no gas
+                     # sub-stepping); the tomas-jax species layout (1 = sulfate,
+                     # round-off identical for this chain). Sort, chunking, cap
+                     # warnings and the cap itself change cost or reporting only.
+                     float(os.environ.get('MICRO_COAG', 'fixed').lower() == 'heun'),
+                     (float(os.environ.get('MICRO_GAS_FRAC', '0.1'))
+                      if os.environ.get('MICRO_GAS_SUBSTEP', 'none').lower() == 'adaptive'
+                      else -1.0),
+                     float(os.environ.get('TOMAS_SPECIES', 'default').strip().lower()
+                           == 'sulfate'),
+                     # 2026-11-25, appended: MICRO=full's multiplier on the
+                     # Brownian coagulation kernel (MICRO_COAG_SCALE, default 1 =
+                     # unchanged; a sensitivity knob).
+                     float(os.environ.get('MICRO_COAG_SCALE', '1')),
+                     # 2026-11-25, appended: MICRO=full's multiplier on the total
+                     # nucleation rate (MICRO_FN_SCALE, default 1 = unchanged).
+                     float(os.environ.get('MICRO_FN_SCALE', '1'))])
 PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'MICRO_ENGINE=emulator', 'ADV_SCHEME=sl', 'RAD_ENGINE=emulator',
                           'ADV_SCHEME=ffsl', 'MET_SRC=file', 'BC_SRC=clim', 'ADV_PASSIVE',
@@ -685,7 +706,9 @@ PHYS_CFG_KEYS = np.array(['WET_SETTLING', 'WET_OPTICS', 'SETTLE', 'ADV_VPOS',
                           'RAD_SOLAR_ALIGN', 'MICRO_ENGINE=full', 'ADV_SCHEME=lr',
                           'MET_RH', 'RAD_T_FEEDBACK', 'MICRO_DT', 'MICRO_NCOAG',
                           'MICRO_COAG=adaptive', 'MICRO_FION', 'MET_SRC=jcm', 'MET_Q=met',
-                          'MET_SRC=jcm_online', 'ADV_SL_RHONORM'])
+                          'MET_SRC=jcm_online', 'ADV_SL_RHONORM',
+                          'MICRO_COAG=heun', 'MICRO_GAS_FRAC', 'TOMAS_SPECIES=sulfate',
+                          'MICRO_COAG_SCALE', 'MICRO_FN_SCALE'])
 ALPHA_COND = float(os.environ.get('ALPHA_COND', '1.0'))  # H2SO4 accommodation coeff (SAI box-model value)
 # ---- diurnal OH from a solar-zenith-angle curve (Hanisco et al. 2001, Fig. 1) ----
 # DEFAULT ON. The SO2+OH chemistry uses OH(theta) read off the paper's figure
@@ -788,12 +811,121 @@ MICRO_DT = float(os.environ.get('MICRO_DT', '60'))          # dev step [s]
 # forward-Euler coag sub-steps per dev step. dev's default is 10; 1 is within
 # 5e-4 of it in total N (max over 20k real cells, 6 h) at 1/3 of the cost.
 MICRO_NCOAG = int(os.environ.get('MICRO_NCOAG', '1'))
-MICRO_COAG = os.environ.get('MICRO_COAG', 'fixed').lower()   # fixed | adaptive
-if MICRO_COAG not in ('fixed', 'adaptive'):
-    raise SystemExit(f"coupling: MICRO_COAG must be fixed|adaptive, got {MICRO_COAG!r}")
+MICRO_COAG = os.environ.get('MICRO_COAG', 'fixed').lower()   # fixed | adaptive | heun
+_COAG_SOLVER = {'fixed': 'euler_fixed', 'adaptive': 'euler_adaptive',
+                'heun': 'heun_adaptive'}
+if MICRO_COAG not in _COAG_SOLVER:
+    raise SystemExit(f"coupling: MICRO_COAG must be fixed|adaptive|heun, got {MICRO_COAG!r}")
+# ---- adaptive sub-stepping (2026-11-25, tomas-jax PR #49; preset
+# cesm_adaptive_substep). All default off = the MICRO=full chain as before.
+# MICRO_COAG=heun: make_step(coag_solver='heun_adaptive'), second-order
+# coagulation with error control (rtol 3e-3, atol 1e-6 of total N: dev's
+# defaults; rtol 1e-2 changes neither cost nor result per the PR). Needs a
+# tomas-jax checkout at PR #49 or later.
+# MICRO_GAS_SUBSTEP=adaptive: make_step(gas_substep='adaptive'), the gas,
+# nucleation and condensation chain sub-stepped so that (CS + n_eff k_nuc) dt_sub
+# <= MICRO_GAS_FRAC (tomas-jax docs/gas_substep.md). Without it the nucleation
+# gas clamp fires at >= 1 ppmv SO2 and N(>3 nm) can come out up to 50x too high,
+# i.e. in the injection plume. MICRO_GAS_MAX_SUBSTEPS caps the sub-steps per dev
+# step (dev's default 16384; ~41,000 are needed per 600 s at 217 K / 100 ppmv).
+# A binding cap gives a wrong answer, so each step reports it (MICRO_CAP_ABORT).
+MICRO_GAS_SUBSTEP = os.environ.get('MICRO_GAS_SUBSTEP', 'none').lower()
+if MICRO_GAS_SUBSTEP not in ('none', 'adaptive'):
+    raise SystemExit(f"coupling: MICRO_GAS_SUBSTEP must be none|adaptive, got {MICRO_GAS_SUBSTEP!r}")
+MICRO_GAS_FRAC = float(os.environ.get('MICRO_GAS_FRAC', '0.1'))
+MICRO_GAS_MAX_SUBSTEPS = int(os.environ.get('MICRO_GAS_MAX_SUBSTEPS', '16384'))
+# dev's per-cell cap warnings are jax.debug.callbacks, which vmap unrolls once per
+# cell: 8192 cells compiled in 217 s vs 9 s and stepped in 5.3 s vs 0.06 s
+# (tomas-jax docs/gpu_deployment.md). 0 drops them; the caps are then read from
+# the step's sub-step info instead (MICRO_GAS_SUBSTEP=adaptive, the only path that
+# returns it) and reported once per coupling step.
+MICRO_CAP_WARNINGS = os.environ.get('MICRO_CAP_WARNINGS', '1') != '0'
+# a step in which any cell hit the gas or coag sub-step cap aborts the run (1,
+# default): a binding cap is an unconverged answer, not noise. 0 = report only.
+MICRO_CAP_ABORT = os.environ.get('MICRO_CAP_ABORT', '1') != '0'
+if not MICRO_CAP_WARNINGS and MICRO_GAS_SUBSTEP != 'adaptive' and MICRO_COAG != 'fixed':
+    raise SystemExit("coupling: MICRO_CAP_WARNINGS=0 with an adaptive coag solver needs "
+                     "MICRO_GAS_SUBSTEP=adaptive: dev returns the sub-step info only on that "
+                     "path, so a binding coag sub-step cap would truncate steps silently")
+# MICRO_SORT=prod: order the cells by SO2 production (k1 OH SO2, in half-decade
+# tiers, T within a tier) before chunking. A vmapped adaptive step runs every
+# cell of a chunk in lockstep with its slowest one; sorting packs the hot plume
+# cells together instead of spreading them over many chunks (7-10x in the PR's
+# GPU benchmarks). Cost only: a cell's result does not depend on its chunk-mates
+# (max rel. difference 0 across orderings in the PR), so it is not stamped.
+# none = grid order (default, as before).
+MICRO_SORT = os.environ.get('MICRO_SORT', 'none').lower()
+if MICRO_SORT not in ('none', 'prod'):
+    raise SystemExit(f"coupling: MICRO_SORT must be none|prod, got {MICRO_SORT!r}")
+# TOMAS_SPECIES is read by tomas-jax itself at its first import (PR #49 on):
+# 'sulfate' is the reduced SO4/NH4/H2O layout (3 Mk columns instead of 44),
+# bit-identical to the default layout for this chain (org_frac 0, no org/NH3).
+# Checked against the checkout here, so a checkout without it cannot ignore it.
+TOMAS_SPECIES = os.environ.get('TOMAS_SPECIES', 'default').strip().lower() or 'default'
+if getattr(tconfig, 'SPECIES_LAYOUT', 'default') != TOMAS_SPECIES:
+    raise SystemExit(f"coupling: TOMAS_SPECIES={TOMAS_SPECIES} but the tomas-jax checkout "
+                     f"at {TOMAS_JAX_PATH} runs the "
+                     f"{getattr(tconfig, 'SPECIES_LAYOUT', 'default (no TOMAS_SPECIES support)')} "
+                     f"layout")
 # ion-pair production [cm-3 s-1] for ion-induced nucleation. dev's strat setup
 # uses 10; the user set ions to zero on 2026-11-18 (default 0 = neutral only).
 MICRO_FION = float(os.environ.get('MICRO_FION', '0'))
+# multiplier on the Brownian coagulation kernel in all three of dev's coag
+# solvers (make_step's runtime kwarg coag_kernel_scale, jit-traced). A
+# sensitivity knob for coagulation/nucleation tests (e.g. x0.5, x2); default 1 =
+# unchanged, and then the kwarg is not passed at all, so a default run stays
+# bit-identical and builds on checkouts without it (PR #49 before #51, e.g. 0ba8f4b). Only
+# MICRO=full with MICRO_ENGINE=full honours it: the fast engine (gpu-fast
+# 787c991) has no kernel scale (driver_fast.py refuses), and a checkout whose
+# make_step lacks the kwarg is refused at startup (_check_coag_scale).
+MICRO_COAG_SCALE = float(os.environ.get('MICRO_COAG_SCALE', '1'))
+# finite and >= 0, as tomas-jax's check_coag_kernel_scale (so inf and NaN are
+# refused here, before the data are read, not at the first micro step)
+if not (np.isfinite(MICRO_COAG_SCALE) and MICRO_COAG_SCALE >= 0.0):
+    raise SystemExit(f"coupling: MICRO_COAG_SCALE must be finite and >= 0, "
+                     f"got {MICRO_COAG_SCALE:g}")
+if MICRO_COAG_SCALE != 1.0 and MICRO_MODE != 'full':
+    raise SystemExit(f"coupling: MICRO_COAG_SCALE={MICRO_COAG_SCALE:g} needs MICRO=full "
+                     f"(tomas-jax dev make_step); MICRO={MICRO_MODE} has no kernel scale")
+# multiplier on the TOTAL nucleation rate (make_step's runtime kwarg fn_scale,
+# jit-traced): Riccobono+Dunne (organic + inorganic, plus ion-induced under
+# MICRO_FION) times the scale. A sensitivity knob for nucleation tests on the
+# adaptive-substep chain (e.g. x0.5, x2); the MICRO=full counterpart of the fast
+# engine's FAST_FN_SCALE (microphysics/tomas_fast.py), which it does not touch.
+# The adaptive gas sub-step criterion sees the scaled rate, so a larger scale
+# takes correspondingly shorter gas sub-steps. Default 1 = unchanged, and then
+# the kwarg is not passed, so a default run stays bit-identical. fn_scale exists
+# in every supported dev checkout (dev 835ee24 on), so no checkout check.
+MICRO_FN_SCALE = float(os.environ.get('MICRO_FN_SCALE', '1'))
+if not (np.isfinite(MICRO_FN_SCALE) and MICRO_FN_SCALE >= 0.0):
+    raise SystemExit(f"coupling: MICRO_FN_SCALE must be finite and >= 0, "
+                     f"got {MICRO_FN_SCALE:g}")
+if MICRO_FN_SCALE != 1.0 and MICRO_MODE != 'full':
+    raise SystemExit(f"coupling: MICRO_FN_SCALE={MICRO_FN_SCALE:g} needs MICRO=full "
+                     f"(tomas-jax dev make_step); MICRO={MICRO_MODE} has no nucleation")
+# step kwargs that are passed only when set (see MICRO_COAG_SCALE, MICRO_FN_SCALE)
+_STEP_EXTRA = ({'coag_kernel_scale': MICRO_COAG_SCALE} if MICRO_COAG_SCALE != 1.0 else {})
+if MICRO_FN_SCALE != 1.0:
+    _STEP_EXTRA['fn_scale'] = MICRO_FN_SCALE
+
+
+def _check_coag_scale():
+    """Refuse MICRO_COAG_SCALE != 1 on a checkout whose make_step lacks it.
+
+    dev's step function only WARNS on an unknown kwarg and then ignores it, so
+    without this a scaled run would silently run unscaled."""
+    if MICRO_COAG_SCALE == 1.0 or MICRO_MODE != 'full':
+        return
+    try:
+        from tomas_jax.solvers.condensation import _VALID_MAKE_STEP_KWARGS as _ok
+    except ImportError:
+        _ok = ()
+    if 'coag_kernel_scale' not in _ok:
+        raise SystemExit(
+            f"coupling: MICRO_COAG_SCALE={MICRO_COAG_SCALE:g} but the tomas-jax checkout "
+            f"at {TOMAS_JAX_PATH} has no make_step coag_kernel_scale. It needs a tomas-jax "
+            f"whose make_step accepts coag_kernel_scale (PR #49 with the coag_kernel_scale "
+            f"commits, or later); set MICRO_COAG_SCALE=1 to run this checkout.")
 # MNFIX over only the out-of-range bins (dev's own default). Bit-identical to
 # trim=False and 5x faster here, although dev's docstring advises False under
 # vmap (measured 2026-11-18: 153 vs 30 ms per 20k-cell coag step).
@@ -1416,26 +1548,45 @@ def _dev_step():
         from tomas_jax.physics.nucleation import default_nucleation_params
         from tomas_jax.physics.water_equilibrium import WATER_SCHEME_H2SO4
         from tomas_jax.solvers.condensation import make_step
+        _check_coag_scale()
+        # the PR #49 arguments are passed only when set, so the default chain
+        # still builds against dev 835ee24, which does not have them
+        extra = {}
+        if MICRO_GAS_SUBSTEP == 'adaptive':
+            extra.update(gas_substep='adaptive', gas_substep_frac=MICRO_GAS_FRAC,
+                         gas_max_substeps=MICRO_GAS_MAX_SUBSTEPS,
+                         return_substep_info=True)
+        if not MICRO_CAP_WARNINGS:
+            extra['cap_warnings'] = False
         _DEV['step'] = make_step(
             ['so2_chemistry', 'nucleation', 'coagulation', 'condensation'],
             n_coag_substeps=MICRO_NCOAG,
-            coag_solver='euler_fixed' if MICRO_COAG == 'fixed' else 'euler_adaptive',
+            coag_solver=_COAG_SOLVER[MICRO_COAG],
             max_nucleation_frac=0.5, max_nuc_substeps=20,
             water_scheme=WATER_SCHEME_H2SO4, sparse_density=1770.0,
-            mnfix_trim=MICRO_MNFIX_TRIM, jit=False)
+            mnfix_trim=MICRO_MNFIX_TRIM, jit=False, **extra)
         _DEV['nuc'] = default_nucleation_params()._replace(rho_nuc=1770.0, org_frac=0.0)
     return _DEV['step'], _DEV['nuc']
 
 
 def describe_full_chain():
     """One-line description of MICRO=full for the run header."""
+    coag = _COAG_SOLVER[MICRO_COAG] + (f" ({MICRO_NCOAG} sub-steps)" if MICRO_COAG == 'fixed'
+                                       else " (rtol 3e-3, atol 1e-6 N)" if MICRO_COAG == 'heun'
+                                       else "")
+    gas = (f"adaptive gas sub-steps (f {MICRO_GAS_FRAC:g}, cap {MICRO_GAS_MAX_SUBSTEPS})"
+           if MICRO_GAS_SUBSTEP == 'adaptive' else "no gas sub-steps")
     return (f"tomas-jax dev make_step [so2_chemistry, nucleation, coagulation, "
             f"condensation], {NSTEP_MICRO} x {MICRO_DT:g} s per step: "
-            f"coag euler_{MICRO_COAG} ({MICRO_NCOAG} sub-steps), Riccobono+Dunne "
+            f"coag {coag}, coag kernel x{MICRO_COAG_SCALE:g}, {gas}, Riccobono+Dunne "
             f"(rho_nuc 1770, org_frac 0, fion {MICRO_FION:g}, no org/NH3), "
+            f"nucleation x{MICRO_FN_SCALE:g}, "
             f"PPM condensation (alpha {ALPHA_COND:g}), Tabazadeh H2SO4/H2O water, "
-            f"sparse_density 1770, mnfix_trim {int(MICRO_MNFIX_TRIM)}; "
-            f"{MICRO_GPUS} GPU(s), abort if one step's micro > {MICRO_MAX_WALL:g} s")
+            f"sparse_density 1770, mnfix_trim {int(MICRO_MNFIX_TRIM)}, "
+            f"species layout {TOMAS_SPECIES}; cap warnings {int(MICRO_CAP_WARNINGS)}, "
+            f"cap abort {int(MICRO_CAP_ABORT)}; {MICRO_GPUS} GPU(s), "
+            f"{CELL_CHUNK}-cell chunks, sort {MICRO_SORT}, "
+            f"abort if one step's micro > {MICRO_MAX_WALL:g} s")
 
 
 def _micro_cell(Nk, Mtot, so2, h2so4, temp, pres, rh, oh_samp):
@@ -1444,7 +1595,9 @@ def _micro_cell(Nk, Mtot, so2, h2so4, temp, pres, rh, oh_samp):
     so2, h2so4 : gas [kg/box]   rh : [0-1]
     oh_samp    : (NOH,) OH [molec/cm3] samples evenly spaced over the step; dev
                  step i uses sample i*NOH//NSTEP_MICRO (NOH = 1: constant OH).
-    Returns (Nk, dry Mtot, so2, h2so4).
+    Returns (Nk, dry Mtot, so2, h2so4, diag); diag = [gas cap hit (0/1), max
+    coag dt left [s], gas sub-steps, coag intervals, max k_nuc dt_sub] summed or
+    maxed over the dev steps (MICRO_GAS_SUBSTEP=adaptive; zeros otherwise).
     """
     # two-moment consistency clip (advected Nk/Mtot arrive independent): pin
     # each bin's mean particle mass into its bounds; run_microphysics_full
@@ -1458,14 +1611,28 @@ def _micro_cell(Nk, Mtot, so2, h2so4, temp, pres, rh, oh_samp):
     noh = oh_samp.shape[0]
     step, nuc = _dev_step()
 
+    diag = jnp.zeros(5, dtype=jnp.float64)
+
     def body(i, c):
         oh = oh_samp[(i * noh) // NSTEP_MICRO]
-        return step(*c, XK, temp, pres, BOXVOL, rh, ALPHA_COND, MICRO_DT,
-                    oh_conc=oh, fion=MICRO_FION, nucl_params=nuc)
-    Nk, Mk, Gc = jax.lax.fori_loop(0, NSTEP_MICRO, body, (Nk, Mk, Gc))
+        if MICRO_GAS_SUBSTEP != 'adaptive':
+            return step(*c[:3], XK, temp, pres, BOXVOL, rh, ALPHA_COND, MICRO_DT,
+                        oh_conc=oh, fion=MICRO_FION, nucl_params=nuc,
+                        **_STEP_EXTRA) + (c[3],)
+        Nk, Mk, Gc, info = step(*c[:3], XK, temp, pres, BOXVOL, rh, ALPHA_COND,
+                                MICRO_DT, oh_conc=oh, fion=MICRO_FION, nucl_params=nuc,
+                                **_STEP_EXTRA)
+        d = c[3]
+        d = jnp.stack([jnp.maximum(d[0], jnp.asarray(info['hit_cap'], jnp.float64)),
+                       jnp.maximum(d[1], jnp.max(info['coag_dt_left'])),
+                       d[2] + info['n_sub'], d[3] + info['n_coag'],
+                       jnp.maximum(d[4], info['knuc_dt_max'])])
+        return Nk, Mk, Gc, d
+    Nk, Mk, Gc, diag = jax.lax.fori_loop(0, NSTEP_MICRO, body, (Nk, Mk, Gc, diag))
     # coupled state is DRY aerosol mass (water is diagnostic): every slot below
-    # SRTH2O, which at this composition is the sulfate alone
-    return Nk, Mk[:, :SRTH2O].sum(axis=1), Gc[SRTSO2], Gc[SRTSO4]
+    # SRTH2O, which at this composition is the sulfate alone (TOMAS_SPECIES=
+    # sulfate: sulfate + the NH4 placeholder column, which stays 0)
+    return Nk, Mk[:, :SRTH2O].sum(axis=1), Gc[SRTSO2], Gc[SRTSO4], diag
 
 
 _micro_vmap = jax.jit(jax.vmap(_micro_cell, in_axes=(0,) * 8))
@@ -1473,6 +1640,10 @@ _micro_vmap = jax.jit(jax.vmap(_micro_cell, in_axes=(0,) * 8))
 
 class MicroTooSlow(SystemExit):
     """Raised when one step's microphysics exceeds MICRO_MAX_WALL."""
+
+
+class MicroCapHit(SystemExit):
+    """Raised when a cell hits a sub-step cap (MICRO_CAP_ABORT=1)."""
 
 
 def run_microphysics(num, mas, temp3d, pres3d, wgt3d):
@@ -1620,12 +1791,26 @@ def run_microphysics_full(num, mas, so2, h2so4, temp3d, pres3d, rh3d, oh3d,
 
     out_N = np.empty_like(Nk_all); out_M = np.empty_like(Mt_all)
     out_S = np.empty_like(S_all);  out_H = np.empty_like(H_all)
+    out_D = np.zeros((ncell, 5))
     devs = _DEVICES[:max(1, min(MICRO_GPUS, NDEV))]
     # equal-size chunks (pad the last by repeating its final cell) so each
     # device compiles once and every call reuses it
     chunk = min(CELL_CHUNK, ncell)
     pieces = [(a, min(a + chunk, ncell)) for a in range(0, ncell, chunk)]
     ins = (Nk_all, Mt_all, S_all, H_all, T_f, P_f, RH_f, OH_f)
+    order = None
+    if MICRO_SORT == 'prod':
+        # SO2 + OH production [molec cm-3 s-1] at the step-mean OH; half-decade
+        # tiers, hottest first (so a hopeless step hits MICRO_MAX_WALL early), T
+        # ascending within a tier (tomas-jax benchmarks/python/heun_sort_gpu.py).
+        # lexsort is stable and the key is host state, so the order is deterministic.
+        from tomas_jax.physics.so2_chemistry import calc_k1_so2_oh
+        k1 = np.asarray(calc_k1_so2_oh(T_f, P_f, RH_f))
+        so2_cc = S_all / (MW_SO2 * 1e-3 / 6.02214076e23) / BOXVOL   # BOXVOL in cm3
+        prod = k1 * OH_f.mean(axis=1) * so2_cc
+        tier = np.floor(2.0 * np.log10(np.maximum(prod, 1e-30)))
+        order = np.lexsort((T_f, -tier))
+        ins = tuple(x[order] for x in ins)
     slow = []
 
     def put(a, b, d):
@@ -1642,6 +1827,7 @@ def run_microphysics_full(num, mas, so2, h2so4, temp3d, pres3d, rh3d, oh3d,
             n = b - a
             out_N[a:b] = np.asarray(o[0])[:n]; out_M[a:b] = np.asarray(o[1])[:n]
             out_S[a:b] = np.asarray(o[2])[:n]; out_H[a:b] = np.asarray(o[3])[:n]
+            out_D[a:b] = np.asarray(o[4])[:n]
             if os.environ.get('DEBUG'):
                 print(f"  [dbg] micro chunk {b}/{ncell} on {d} "
                       f"({time.time() - t_start:.0f}s)", flush=True)
@@ -1661,8 +1847,31 @@ def run_microphysics_full(num, mas, so2, h2so4, temp3d, pres3d, rh3d, oh3d,
             f"coupling: MICRO=full took {t_wall:.0f} s for this step, over the "
             f"MICRO_MAX_WALL={MICRO_MAX_WALL:g} s budget -- aborting the run "
             f"({describe_full_chain()}). A slow micro step means a configuration "
-            f"to fix (MICRO_DT, MICRO_NCOAG, MICRO_COAG, MICRO_GPUS), not one to wait out.")
+            f"to fix (MICRO_DT, MICRO_NCOAG, MICRO_COAG, MICRO_GAS_SUBSTEP, MICRO_SORT, "
+            f"CELL_CHUNK, MICRO_GPUS), not one to wait out.")
     run_microphysics_full.last_wall = t_wall
+    if order is not None:                         # back to grid order
+        inv = np.empty_like(order)
+        inv[order] = np.arange(ncell)
+        out_N, out_M, out_S, out_H, out_D = (x[inv] for x in (out_N, out_M, out_S, out_H, out_D))
+    if MICRO_GAS_SUBSTEP == 'adaptive':
+        n_gas = int((out_D[:, 0] > 0).sum())
+        n_coag = int((out_D[:, 1] > 0).sum())
+        i_hot = int(np.argmax(out_D[:, 2]))
+        run_microphysics_full.last_caps = (n_gas, n_coag)
+        print(f"  [full] {ncell} cells in {len(pieces)} chunk(s) of {chunk}, sort "
+              f"{MICRO_SORT}, {t_wall:.1f}s | cap hits: gas {n_gas} coag {n_coag} cells"
+              f" | gas sub-steps per step: mean {out_D[:, 2].mean():.0f}, max "
+              f"{out_D[i_hot, 2]:.0f} (cell {i_hot}) | coag intervals max "
+              f"{out_D[:, 3].max():.0f} | max k_nuc dt_sub {out_D[:, 4].max():.3g}",
+              flush=True)
+        if (n_gas or n_coag) and MICRO_CAP_ABORT:
+            raise MicroCapHit(
+                f"coupling: {n_gas} cell(s) hit the gas sub-step cap "
+                f"(MICRO_GAS_MAX_SUBSTEPS={MICRO_GAS_MAX_SUBSTEPS}) and {n_coag} the "
+                f"coag sub-step cap this step (max coag dt left "
+                f"{out_D[:, 1].max():.3g} s) -- an unconverged step; aborting the run. "
+                f"Raise the cap or shorten MICRO_DT (MICRO_CAP_ABORT=0 reports only).")
 
     num2 = (out_N * inv_rho[:, None]).T.reshape(nbin, nlev, nlat, nlon)
     mas2 = (out_M * inv_rho[:, None]).T.reshape(nbin, nlev, nlat, nlon)
@@ -1871,6 +2080,7 @@ def install_bc_source():
 
 def main():
     t0 = time.time()
+    _check_coag_scale()      # before any data is read: a refusal costs nothing
     # Clear stale savez_atomic temp files from a previous crash. The truncated
     # bytes land in the .tmp (that is the point), but a killed run leaves one
     # behind -- up to ~6 GB for the frames ckpt, and it matches the
@@ -2731,11 +2941,18 @@ def main():
             # MET_SRC=cesm, Q over ice under file. A bare resume of such a ckpt
             # on the current defaults is therefore reported as the seam it is.
             # MICRO_FION: dev's stratospheric setup's 10 (the user set it to 0
-            # on 2026-11-18). The other MICRO_* stamps have no single implied
-            # value (older ckpts ran other engines), so they are not compared.
+            # on 2026-11-18). MICRO_DT, MICRO_NCOAG and MICRO_COAG=adaptive have
+            # no single implied value (older ckpts ran other engines), so they
+            # are not compared. The 2026-11-25 stamps do: code before them
+            # refused MICRO_COAG=heun and had no gas sub-steps or TOMAS_SPECIES,
+            # and every older ckpt ran the unscaled coag kernel (MICRO_COAG_SCALE 1)
+            # and the unscaled nucleation rate (MICRO_FN_SCALE 1).
             _legacy = {'RAD_T_FEEDBACK': 1.0,
                        'MET_RH': 0.0 if MET_SRC == 'cesm' else 1.0,
-                       'MICRO_FION': 10.0}
+                       'MICRO_FION': 10.0,
+                       'MICRO_COAG=heun': 0.0, 'MICRO_GAS_FRAC': -1.0,
+                       'TOMAS_SPECIES=sulfate': 0.0, 'MICRO_COAG_SCALE': 1.0,
+                       'MICRO_FN_SCALE': 1.0}
             for _i in range(_n, len(_ph_now)):
                 _k = str(PHYS_CFG_KEYS[_i])
                 if _k in _legacy and _legacy[_k] != _ph_now[_i]:

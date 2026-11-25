@@ -142,7 +142,14 @@ KNOBS = [
  ("phys", "--micro",       "MICRO",        None,   "full|coag|off", "microphysics mode; 'off' is transport-only"),
  ("phys", "--micro-dt",    "MICRO_DT",     None,   "s",   "MICRO=full: tomas-jax dev step length (default 60, dev's; must divide the 6 h step)"),
  ("phys", "--micro-ncoag", "MICRO_NCOAG",  None,   "N",   "MICRO=full: forward-Euler coag sub-steps per dev step (default 1; dev's own default 10 is within 5e-4 in total N at 3x the cost)"),
- ("phys", "--micro-coag",  "MICRO_COAG",   None,   "fixed|adaptive", "MICRO=full: dev's coag solver (default fixed = euler_fixed, dev's strat setup; adaptive = euler_adaptive, ~100x slower and over the micro budget)"),
+ ("phys", "--micro-coag",  "MICRO_COAG",   None,   "fixed|adaptive|heun", "MICRO=full: dev's coag solver (default fixed = euler_fixed, dev's strat setup; adaptive = euler_adaptive, ~100x slower and over the micro budget; heun = heun_adaptive, error-controlled 2nd order, tomas-jax PR #49 on)"),
+ ("phys", "--micro-gas-substep", "MICRO_GAS_SUBSTEP", None, "none|adaptive", "MICRO=full: adaptive gas/nucleation/condensation sub-steps (tomas-jax gas_substep='adaptive'; default none). Without them the nucleation gas clamp fires at >= 1 ppmv SO2"),
+ ("phys", "--micro-gas-frac", "MICRO_GAS_FRAC", None, "F",   "MICRO=full, adaptive gas sub-steps: criterion (CS + n_eff k_nuc) dt_sub <= F (default 0.1, the validated value)"),
+ ("phys", "--micro-gas-max-substeps", "MICRO_GAS_MAX_SUBSTEPS", None, "N", "MICRO=full, adaptive gas sub-steps: cap per dev step (default 16384, dev's; a binding cap is reported and aborts the run under MICRO_CAP_ABORT=1)"),
+ ("phys", "--micro-cap-warnings", "MICRO_CAP_WARNINGS", None, "0|1", "MICRO=full: dev's per-cell sub-step cap warnings (default 1). 0 drops them -- they are unrolled per cell under vmap (~25x compile, ~90x step time) -- and reads the caps from the sub-step info instead (needs MICRO_GAS_SUBSTEP=adaptive with an adaptive coag solver)"),
+ ("phys", "--micro-cap-abort", "MICRO_CAP_ABORT", None, "0|1", "MICRO=full, adaptive gas sub-steps: abort the run when any cell hits a gas or coag sub-step cap (default 1); 0 = report only"),
+ ("phys", "--micro-coag-scale", "MICRO_COAG_SCALE", None, "x", "MICRO=full: multiplier on the Brownian coagulation kernel in all coag solvers (sensitivity knob; default 1 = unchanged; needs a tomas-jax with make_step coag_kernel_scale)"),
+ ("phys", "--micro-fn-scale", "MICRO_FN_SCALE", None, "x", "MICRO=full: multiplier on the total nucleation rate passed to make_step as fn_scale (sensitivity knob; default 1 = unchanged; the adaptive gas sub-steps see the scaled rate; fast engine: FAST_FN_SCALE)"),
  ("phys", "--micro-fion",  "MICRO_FION",   None,   "cm-3 s-1", "MICRO=full: ion-pair production for ion-induced nucleation (default 0 = off; dev's strat setup uses 10)"),
  ("phys", "--micro-mnfix-trim", "MICRO_MNFIX_TRIM", None, "0|1", "MICRO=full: MNFIX over out-of-range bins only (default 1; bit-identical to 0 and 5x faster here)"),
  ("phys", "--micro-max-wall", "MICRO_MAX_WALL", None, "s", "MICRO=full: abort the run if one step's microphysics takes longer (default 300)"),
@@ -170,6 +177,7 @@ KNOBS = [
                                                           "which engine advances the run (default fast = tomas_jax.fast, "
                                                           "tomas-jax gpu-fast; full = tomas-jax dev make_step, which needs a "
                                                           "preset whose tomas-jax slot is a dev checkout)"),
+ ("engine", "--tomas-species", "TOMAS_SPECIES", None, "default|sulfate", "tomas-jax species layout, read by tomas-jax at import (PR #49 on): sulfate = 3 Mk columns (SO4, NH4 placeholder, H2O) instead of 44, round-off identical for this chain (default default; coupling.py refuses a value the checkout does not support)"),
  ("engine", "--micro-wrap-device", "MICRO_WRAP_DEVICE", None, "0|1", "perf: MICRO_ENGINE=fast adapter (microphysics/tomas_fast.py) does its unit conversion, transposes, consistency clip and OH field on the device, no host round trip for num/mas (not bit-identical: device reductions/ordering give ~1e-12 rel diffs in a few cells, within run-to-run GPU noise; default 1 since 2026-11-23, not used under FAST_MULTIGPU on >1 device; 0 = numpy, the old default)"),
  # ---- meteorology source ----
  ("met", "--met-src",      "MET_SRC",      None,   "cesm|file|jcm|jcm_online", "where U/V/OMEGA/T come from (set by the preset): cesm = the hourly CESM h1 archive; jcm = a jcm-strat run directory (--jcm-dir), 6-hourly, and the model GRID with it (T63 Gaussian 96x192, JCM's native levels in the band; needs --clim-file on that grid, scripts/met/regrid_clim_to_grid.py); jcm_online = the same fields and grid from the jcm-strat AL7h model integrated LIVE beside this one (src/met/jcm_server.py, a subprocess under --jcm-py on the same GPU; code from the jcm-strat slot), started from the --jcm-dir chain's 1 January checkpoint; file = step-end frames in MET_DIR (the seam for an emulated dycore). Everything else (Q, gases, reservoirs, the radiation column below the band) comes from --bc-src"),
@@ -221,6 +229,7 @@ KNOBS = [
  # ---- memory / performance (numerically irrelevant; the perf switches that are
  #      not bit-identical, e.g. MICRO_WRAP_DEVICE, live in their stage's group) ----
  ("perf", "--cell-chunk",  "CELL_CHUNK",   None,   "N",   "cells per microphysics vmap batch"),
+ ("perf", "--micro-sort",  "MICRO_SORT",   None,   "none|prod", "MICRO=full: order the cells by SO2 production (k1 OH SO2 tiers, then T) before chunking, so the slow plume cells share chunks (default none = grid order; results unchanged)"),
  ("perf", "--tracer-chunk", "TRACER_CHUNK", None,  "N",   "tracers per advection batch (0 = all 82 at once)"),
  # ---- input data locations ----
  ("path", "--cesm-dir",    "CESM_DIR",     None,   "PATH", "root of the CESM h1 tseries archive"),
