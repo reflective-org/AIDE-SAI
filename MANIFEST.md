@@ -749,8 +749,8 @@ any directory. What they take from the cwd is the checkpoint they read
   Stamped append-only in `PHYS_CFG`: `MICRO_COAG=heun`, `MICRO_GAS_FRAC`
   (-1 = no gas sub-steps), `TOMAS_SPECIES=sulfate`; a RESUME from an older
   checkpoint compares them against their implied values (0, -1, 0).
-  Nucleation sensitivity can use `make_step`'s `fn_scale` step argument or
-  `NucleationParams`, not yet exposed as knobs.
+  Nucleation sensitivity: `MICRO_FN_SCALE` below (the rate scale);
+  `NucleationParams` are not exposed as knobs.
 
 - **`MICRO_COAG_SCALE`, coagulation-kernel scale (2026-11-25, user request).**
   Default 1 (unchanged). A multiplier on the Brownian coagulation kernel in
@@ -779,6 +779,28 @@ any directory. What they take from the cwd is the checkpoint they read
   no sub-step cap hit; budget closure <= 1.4e-15; micro 34-38 s/step at every
   scale. (x2 stopped at 216 h: another job took its GPU and tripped
   `MICRO_MAX_WALL`.)
+
+- **`MICRO_FN_SCALE`, nucleation-rate scale (2026-11-25, user request).**
+  Default 1 (unchanged). A multiplier on the TOTAL nucleation rate of
+  `make_step` (Riccobono+Dunne: `(fn_org + fn_inorg) * fn_scale`, ion-induced
+  included), passed as its runtime step argument `fn_scale` (jit-traced). It
+  exists for nucleation sensitivity tests on the adaptive-sub-stepping chain,
+  the `MICRO=full` counterpart of the fast engine's `FAST_FN_SCALE`, which it
+  does not touch. The adaptive gas sub-step criterion sees the scaled rate, so
+  a larger scale takes correspondingly shorter gas sub-steps (more of them).
+  At 1 the argument is not passed, so a default run is bit-identical; every
+  supported dev checkout (`835ee24` on) has `fn_scale`, so there is no
+  checkout check. `coupling.py` refuses at import a value that is negative or
+  not finite, and `MICRO` other than `full`; `driver_fast.py` refuses it under
+  `MICRO_ENGINE=fast` (use `FAST_FN_SCALE`). Echoed in the run header
+  (`nucleation x<scale>`) and stamped append-only in `PHYS_CFG`
+  (`MICRO_FN_SCALE`, after `MICRO_COAG_SCALE`; implied 1 for older
+  checkpoints). **Test** (CPU, one 6 h step through `_micro_vmap` with the
+  preset's `MICRO_*` and `TOMAS_SPECIES=sulfate`, 215 K, 55 hPa, OH 1e6,
+  1010 cm-3 bimodal, SO2 3e-10 kg/m3): unset and x1 bit-identical; x0 leaves N
+  as the SO2-free cell (N1/N0 0.961 vs 0.960); N1/N0 29.5 / 43.3 / 59.9 / 98.8
+  at x0.5 / 1 / 2 / 10, gas sub-steps 60 / 79 / 98 / 145 per 60 dev steps, no
+  cap hit; total sulfur identical across scales to 4e-11 (relative).
 
 - **Meteorology from one source, everything else from the climatology
   (2026-11-17; now in the presets).** Both presets set `BC_SRC=clim`: only

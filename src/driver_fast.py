@@ -132,6 +132,11 @@ for _k in ('MICRO_REF', 'MICRO_SAMPLE_EVERY'):
 if C.MICRO_COAG_SCALE != 1.0 and MICRO_ENGINE != 'full':
     sys.exit(f"driver_fast: MICRO_COAG_SCALE={C.MICRO_COAG_SCALE:g} needs MICRO_ENGINE=full "
              f"(tomas-jax make_step); MICRO_ENGINE={MICRO_ENGINE} has no coag kernel scale")
+# MICRO_FN_SCALE likewise: the fast engine scales its nucleation with its own
+# FAST_FN_SCALE, so MICRO_FN_SCALE would be silently ignored there.
+if C.MICRO_FN_SCALE != 1.0 and MICRO_ENGINE != 'full':
+    sys.exit(f"driver_fast: MICRO_FN_SCALE={C.MICRO_FN_SCALE:g} needs MICRO_ENGINE=full "
+             f"(tomas-jax make_step); for MICRO_ENGINE={MICRO_ENGINE} use FAST_FN_SCALE")
 _need = {MICRO_ENGINE}
 
 # The adapter imports coupling.py, so it too must stay below the setdefault

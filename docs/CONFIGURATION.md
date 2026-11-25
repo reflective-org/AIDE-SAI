@@ -134,6 +134,9 @@ sea salt are not carried, and ions are off.
   coagulation kernel in all coag solvers, a sensitivity knob; it needs a
   tomas-jax whose `make_step` takes `coag_kernel_scale`, and is refused, not
   ignored, under `MICRO_ENGINE=fast` or on a checkout without it.
+  `MICRO_FN_SCALE` (1) multiplies the total nucleation rate (`make_step`'s
+  `fn_scale`; the adaptive gas sub-steps see the scaled rate), a sensitivity
+  knob; it is refused under `MICRO_ENGINE=fast`, whose own is `FAST_FN_SCALE`.
 - `ALPHA_COND` (H2SO4 accommodation coefficient, 1.0) is read by both engines.
 - `MICRO_SUBSTEPS` is gone and exits if set, so an old command line cannot
   silently mean something else. `N_COAG_SUBSTEPS` serves only the legacy
@@ -301,6 +304,7 @@ has a column of its own.
 | `--micro-ncoag` | `MICRO_NCOAG` | — | — | MICRO=full: forward-Euler coag sub-steps per dev step (default 1; dev's own default 10 is within 5e-4 in total N at 3x the cost) |
 | `--micro-coag` | `MICRO_COAG` | — | — | MICRO=full: dev's coag solver (default fixed = euler_fixed, dev's strat setup; adaptive = euler_adaptive, ~100x slower and over the micro budget) |
 | `--micro-coag-scale` | `MICRO_COAG_SCALE` | — | — | MICRO=full: multiplier on the Brownian coagulation kernel in all coag solvers (sensitivity knob; default 1 = unchanged; needs a tomas-jax with make_step coag_kernel_scale) |
+| `--micro-fn-scale` | `MICRO_FN_SCALE` | — | — | MICRO=full: multiplier on the total nucleation rate passed to make_step as fn_scale (sensitivity knob; default 1 = unchanged; the adaptive gas sub-steps see the scaled rate; fast engine: FAST_FN_SCALE) |
 | `--micro-fion` | `MICRO_FION` | — | — | MICRO=full: ion-pair production for ion-induced nucleation (default 0 = off; dev's strat setup uses 10) |
 | `--micro-mnfix-trim` | `MICRO_MNFIX_TRIM` | — | — | MICRO=full: MNFIX over out-of-range bins only (default 1; bit-identical to 0 and 5x faster here) |
 | `--micro-max-wall` | `MICRO_MAX_WALL` | — | — | MICRO=full: abort the run if one step's microphysics takes longer (default 300) |

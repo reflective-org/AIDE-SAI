@@ -23,6 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `MICRO_ENGINE=fast` and on a checkout without it. One `PHYS_CFG` stamp
   appended. `models/tomas-jax-dev` and `cesm_adaptive_substep` re-pinned from
   `0ba8f4b` to `328d64e` (PR #49 + #51), bit-identical at scale 1.
+- **`MICRO_FN_SCALE` (`--micro-fn-scale`): nucleation-rate multiplier for
+  `MICRO=full`** (default 1 = unchanged, and then not passed). Passed to
+  tomas-jax `make_step` as `fn_scale` (total rate; the adaptive gas sub-steps
+  see it); refused under `MICRO_ENGINE=fast` (use `FAST_FN_SCALE`). One
+  `PHYS_CFG` stamp appended.
 
 ### Changed
 
