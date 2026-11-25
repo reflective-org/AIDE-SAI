@@ -470,6 +470,27 @@ any directory. What they take from the cwd is the checkpoint they read
 
 ## Code state — why the defaults are what they are
 
+- **RESUME continues the advection's boundary values (2026-11-25).**
+  `qfroz` -- the polar-cap freeze target (all levels, |lat| > LAT_FREEZE) and,
+  with `ADV_WCONT`, the open top/bottom faces' inflow reservoir -- is built
+  from the hour-0 IC and refreshed at each step's end; it was not in the state
+  checkpoint and RESUME did not refresh it, so the first resumed step advected
+  against the January hour-0 polar cap and face inflow. Seen in
+  `ccmi2030_ctrl` (resumed at step 2165): M/M0 0.5289 -> 0.5271, SO2 burden
+  -4.6 %, decaying over the following weeks; every resumed run before this
+  date has such a seam at its resume step (incl. the year-2 RESUME of the
+  2-year reference runs). Now `refresh_qfroz(qfroz, t)` does the step-end
+  refresh and RESUME calls it once at the checkpoint hour. **Test** (CESM
+  numerical, 6 Tg/yr +-30 deg, 240 h straight vs 120 h + RESUME to 240 h, GPUs
+  2/3): num, mas, SO2, H2SO4 and every budget term of the resumed run are
+  bit-identical to the uninterrupted one (before: num 2.2e-3, mas 1.5e-3 rel,
+  timeseries Nmin 33 %); fresh runs are bit-identical to the code before the
+  fix. The only residual is in the radiation diagnostics (`hr_kday` 4e-11,
+  `dT_rad` 6e-12 rel at 240 h; first at 1e-14 in `arf_toa` 96 h after the
+  resume, with every reference-cache read a hit), consistent with per-process
+  XLA autotuning in the radiation solve; under `RAD_T_FEEDBACK=0` it does not
+  reach the aerosol.
+
 - **Performance switches (2026-11-23; default ON since 2026-11-23, were
   opt-in at 0).** `RAD_FAST`, `MICRO_WRAP_DEVICE`, `MAM4_BIN_DEVICE`,
   `ADV_SL_DEVICE_RESAMPLE`, `CKPT_ASYNC`. Each is read once at import with
@@ -545,10 +566,10 @@ any directory. What they take from the cwd is the checkpoint they read
     except the clip sums (<= 1e-15), budget closure unchanged.
   - Known, not caused by any switch: the final num/mas of a CESM run differ
     run to run at <= 2.5e-12 in a few columns (GPU nondeterminism in the
-    microphysics), and a RESUME does not reproduce an uninterrupted run
-    (observed in the perf tests, `ckr*_` runs: Nburden ~3e-4 rel after the
-    first resumed step, with or without CKPT_ASYNC; likely some carried
-    advection state is not in the checkpoint) -- not yet investigated.
+    microphysics). The RESUME mismatch also seen in those tests (`ckr*_`
+    runs: Nburden ~3e-4 rel after the first resumed step) was the
+    un-checkpointed `qfroz`, fixed 2026-11-25 (§ RESUME continues the
+    advection's boundary values).
 
 - **The live JCM linking (2026-11-20; `configs/jcm_online_numerical.env`,
   `MET_SRC=jcm_online`; the code dates from 2026-11-18).** `MET_SRC=jcm_online`
@@ -632,6 +653,28 @@ any directory. What they take from the cwd is the checkpoint they read
     zonal-mean U; the 1996 → 1997 rollover (own checkpoint, rebuild) continues
     smoothly (3.8 → 4.1 m/s), but the rebuild took 356 s against 58 s for the
     first build: ~5 % of a year's wall time, not yet understood.
+  - **No radiation reference cache (2026-11-25).** The reference cache is
+    keyed by archive hour, on the premise that the anomaly's reference solve
+    depends on the hour alone. Under `jcm_online` it depends on the run's own
+    live T, so the cache is off whatever `RAD_REF_CACHE` says (the header says
+    `reference cache: OFF (...)`) and `build_ref_cache.py` refuses. Before,
+    the key's archive entry was the constant `jcm_online:<chain>`, so a
+    second run on the same cache directory (a control beside an injected run,
+    a rerun) was served the first run's reference solves: the anomaly then
+    held a (T_this - T_other) term that is not aerosol. The provenance run
+    below was hit for its first four radiation calls (hours 6-24, written
+    ~1.5 h earlier by the 24-h smoke run `jcm_online_smoke24_inj6`); every
+    later hour it computed itself. Because `dT_rad` accumulates, that
+    term outlived the four calls: at hour 24 its `dT_rad` was +1.88/-1.42 K
+    pointwise, rms 0.019 K, against +0.052 K max, rms 0.00014 K for the smoke run
+    on its own reference; rms 0.003 K by about day 5, visible for 1-3 weeks. So
+    the first 2-3 weeks of that run's `dT_rad`, `hr_kday` and ARF carry a
+    non-aerosol term. Under `RAD_T_FEEDBACK=0` its aerosol, microphysics and
+    AOD were not affected. A run on a cold cache computes exactly what it
+    computes now, so only the reuse changes. Cost: none against a cold-cache
+    run (the provenance run was one for 1456 of its 1460 calls); against a
+    warm cache the reference solve and re-binning add ~2-3 s per call on the
+    JCM grid (7.4 s median miss vs 4-6 s hit), about 1 h per simulated year.
   - **Stamps.** `GRID_CFG` met code 3; a RESUME between `jcm` (2) and
     `jcm_online` (3) is allowed (same grid). `PHYS_CFG` gains
     `MET_SRC=jcm_online` (appended; warns on a switch).

@@ -986,6 +986,17 @@ RAD_REF    = os.environ.get('RAD_REF', '').lower()
 RAD_REF_EVERY = int(os.environ.get('RAD_REF_EVERY', '1'))
 RAD_REF_CACHE = os.environ.get('RAD_REF_CACHE',
                                os.path.join(_paths.INPUTS, 'cache', 'rad_ref'))
+# Why the cache is off whatever RAD_REF_CACHE says ('' = it is not). The cache
+# is keyed by archive hour, which assumes the reference solve depends on the
+# hour alone. Under MET_SRC=jcm_online the meteorology is integrated live, so
+# the reference solve depends on the run's own T, and jcm-strat on GPU is not
+# deterministic run to run: a second run would be served the first run's
+# reference solves under the constant key 'jcm_online:<chain>' (2026-11-25;
+# MANIFEST.md). MET_SRC=file needs no entry: it passes its T_band, which
+# bypasses the cache per call.
+RAD_REF_CACHE_OFF_WHY = ('MET_SRC=jcm_online: the meteorology is integrated live, '
+                         'so the reference solve depends on the run, not on an '
+                         'archive hour' if MET_SRC == 'jcm_online' else '')
 RAD_SAMPLE_EVERY = int(os.environ.get('RAD_SAMPLE_EVERY', '0'))
 if RAD_ENGINE == 'emulator' or RAD_REF:
     raise SystemExit("RAD_ENGINE=emulator / RAD_REF: the radiation emulator is not part "
@@ -2162,12 +2173,16 @@ def main():
                                         mmid_kg=MMID, rho_dry=RHO_AER,
                                         solar_window_h=STEP_HOURS * RAD_EVERY,
                                         split_only=(RAD_MODE == 'flux'))
-        if RAD_REF_CACHE not in ('0', ''):
+        if RAD_REF_CACHE not in ('0', '') and not RAD_REF_CACHE_OFF_WHY:
             import rad_cache
             rad.ref_cache = rad_cache.RefCache(RAD_REF_CACHE, rad.cache_key(**rad_ref_src()))
             print(f"  reference cache: {rad.ref_cache.dir}", flush=True)
+        elif RAD_REF_CACHE_OFF_WHY:
+            print(f"  reference cache: OFF ({RAD_REF_CACHE_OFF_WHY}; "
+                  f"RAD_REF_CACHE={RAD_REF_CACHE} ignored)", flush=True)
         print(f"  RAD_ENGINE={RAD_ENGINE} RAD_REF={RAD_REF or '-'} "
-              f"RAD_REF_EVERY={RAD_REF_EVERY} RAD_REF_CACHE={RAD_REF_CACHE} "
+              f"RAD_REF_EVERY={RAD_REF_EVERY} "
+              f"RAD_REF_CACHE={'off(' + MET_SRC + ')' if RAD_REF_CACHE_OFF_WHY else RAD_REF_CACHE} "
               f"RAD_SAMPLE_EVERY={RAD_SAMPLE_EVERY} "
               f"RAD_SOLAR={rad.solar_mode} (window {rad.solar_window_h:g} h"
               + (f", RAD_SOLAR_ALPHA={rad.alpha:g}" if rad.solar_mode == 'window_blend' else "")
@@ -2387,6 +2402,55 @@ def main():
     # open-BC slab levels (native indices into the h1 lev axis)
     lev_top = klevs[:N_BC_TOP]
     lev_bot = klevs[-N_BC_BOT:]
+
+    def refresh_qfroz(qfroz, t, gas_top=None, gas_bot=None):
+        """Advection's boundary values for a step that starts at hour t.
+
+        qfroz is built once from the hour-0 IC above; only two parts of it ever
+        change, and both are set here: the polar rows (the freeze target, all
+        levels) and, with ADV_WCONT, the open top/bottom faces (the inflowing
+        reservoir). The step loop calls this at each step's end with t = it1;
+        RESUME calls it once at the checkpoint hour, because qfroz is not in the
+        checkpoint and would otherwise hand the first resumed step the hour-0
+        (January) polar cap and face inflow -- a seam in M, N and SO2. gas_top /
+        gas_bot pass the (so2, h2so4) faces the step end has already read.
+        """
+        # ---- polar-cap refresh: freeze target for the NEXT step's advection --
+        if pol_idx.size:
+            #polar cells are reset at all vertical levels to MAM4..not just the BC
+            num_pol, mas_pol = aer_fill(t, klevs, lat_idx=pol_idx)
+            # gases refresh from CESM SO2/H2SO4 at the same polar rows
+            so2_pol, h2so4_pol = read_gases(ds_gas, t, klevs, lat_idx=pol_idx)
+            qfroz = qfroz.at[:, :, pol_idx].set(
+                jnp.concatenate([jnp.asarray(num_pol), jnp.asarray(mas_pol),
+                                 jnp.asarray(so2_pol)[None],
+                                 jnp.asarray(h2so4_pol)[None]], axis=0))
+
+        # ---- reservoir refresh for the open vertical faces --------------------
+        # With ADV_WCONT the slab's faces are open and qfroz's TOP and BOTTOM
+        # levels are the concentration that inflowing air carries (upwelling
+        # through ~88 hPa brings tropopause air INTO the band). That exchange is
+        # ~10%/day of the slab gross, so the value matters: keep it current with
+        # the reservoir instead of leaving it at the day-0 field.
+        # Runs AFTER the polar refresh on purpose -- that block rewrites qfroz at
+        # ALL levels on polar rows, so it would otherwise undo the BC_BOT_AER
+        # scaling on the bottom face at high latitudes.
+        if ADV_WCONT:
+            so2_top, h2so4_top = (gas_top if gas_top is not None
+                                  else read_gases(ds_gas, t, lev_top))
+            so2_bot, h2so4_bot = (gas_bot if gas_bot is not None
+                                  else read_gases(ds_gas, t, lev_bot))
+            num_r, mas_r = aer_fill(t, lev_top)
+            qfroz = qfroz.at[:NA, :N_BC_TOP].set(jnp.asarray(num_r))
+            qfroz = qfroz.at[NA:2*NA, :N_BC_TOP].set(jnp.asarray(mas_r))
+            num_r, mas_r = aer_fill(t, lev_bot)
+            qfroz = qfroz.at[:NA, -N_BC_BOT:].set(jnp.asarray(num_r) * BC_BOT_AER)
+            qfroz = qfroz.at[NA:2*NA, -N_BC_BOT:].set(jnp.asarray(mas_r) * BC_BOT_AER)
+            qfroz = qfroz.at[2*NA, :N_BC_TOP].set(jnp.asarray(so2_top))
+            qfroz = qfroz.at[2*NA+1, :N_BC_TOP].set(jnp.asarray(h2so4_top))
+            qfroz = qfroz.at[2*NA, -N_BC_BOT:].set(jnp.asarray(so2_bot))
+            qfroz = qfroz.at[2*NA+1, -N_BC_BOT:].set(jnp.asarray(h2so4_bot))
+        return qfroz
 
     # Can the active advection driver report the vertical face exchange? The fast
     # drivers monkeypatch advect_step_batch, so ask the object we actually hold
@@ -3095,6 +3159,10 @@ def main():
                       f"    coupled_frames_{OUT_TAG}_ckpt.npz before resuming "
                       "(frames then cover only the resumed segment).", flush=True)
 
+        # qfroz is not checkpointed: rebuild its moving parts at the state's hour,
+        # exactly what the end of step s_start-1 left an uninterrupted run with.
+        qfroz = refresh_qfroz(qfroz, s_start * STEP_HOURS)
+
         print(f"  RESUMED from {_state_f}: continuing at step {s_start+1}/"
               f"{N_STEPS} (h {s_start*STEP_HOURS}), {len(frame_hours)} frames, "
               f"{len(ts['hours'])} logged steps restored", flush=True)
@@ -3436,38 +3504,10 @@ def main():
         cumV['in'] += vf_in / M0
         cumV['out'] -= vf_out / M0
 
-        # ---- 4. polar-cap refresh: freeze target for NEXT step's advection ----
-        if pol_idx.size:
-            #polar cells are reset at all vertical levels to MAM4..not just the BC
-            num_pol, mas_pol = aer_fill(it1, klevs, lat_idx=pol_idx)
-            # gases refresh from CESM SO2/H2SO4 at the same polar rows
-            so2_pol, h2so4_pol = read_gases(ds_gas, it1, klevs, lat_idx=pol_idx)
-            #updates the frozen polar values for the next step's advection
-            qfroz = qfroz.at[:, :, pol_idx].set(
-                jnp.concatenate([jnp.asarray(num_pol), jnp.asarray(mas_pol),
-                                 jnp.asarray(so2_pol)[None],
-                                 jnp.asarray(h2so4_pol)[None]], axis=0))
-
-        # ---- 4a. reservoir refresh for the open vertical faces ----------------
-        # With ADV_WCONT the slab's faces are open and qfroz's TOP and BOTTOM
-        # levels are the concentration that inflowing air carries (upwelling
-        # through ~88 hPa brings tropopause air INTO the band). That exchange is
-        # ~10%/day of the slab gross, so the value matters: keep it current with
-        # the reservoir instead of leaving it at the day-0 field.
-        # Runs AFTER the polar refresh on purpose -- that block rewrites qfroz at
-        # ALL levels on polar rows, so it would otherwise undo the BC_BOT_AER
-        # scaling on the bottom face at high latitudes.
-        if ADV_WCONT:
-            num_r, mas_r = aer_fill(it1, lev_top)
-            qfroz = qfroz.at[:NA, :N_BC_TOP].set(jnp.asarray(num_r))
-            qfroz = qfroz.at[NA:2*NA, :N_BC_TOP].set(jnp.asarray(mas_r))
-            num_r, mas_r = aer_fill(it1, lev_bot)
-            qfroz = qfroz.at[:NA, -N_BC_BOT:].set(jnp.asarray(num_r) * BC_BOT_AER)
-            qfroz = qfroz.at[NA:2*NA, -N_BC_BOT:].set(jnp.asarray(mas_r) * BC_BOT_AER)
-            qfroz = qfroz.at[2*NA, :N_BC_TOP].set(jnp.asarray(so2_top))
-            qfroz = qfroz.at[2*NA+1, :N_BC_TOP].set(jnp.asarray(h2so4_top))
-            qfroz = qfroz.at[2*NA, -N_BC_BOT:].set(jnp.asarray(so2_bot))
-            qfroz = qfroz.at[2*NA+1, -N_BC_BOT:].set(jnp.asarray(h2so4_bot))
+        # ---- 4. boundary refresh for the NEXT step's advection: polar cap
+        # (freeze target) and, with ADV_WCONT, the open-face reservoir ----
+        qfroz = refresh_qfroz(qfroz, it1, gas_top=(so2_top, h2so4_top),
+                              gas_bot=(so2_bot, h2so4_bot))
 
         if PROFILE:
             print(f"  [prof] s={s} bc+polar={time.time()-tb:.2f}s", flush=True)

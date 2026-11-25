@@ -394,7 +394,7 @@ has a column of its own.
 | `--rad-lat-chunk` | `RAD_LAT_CHUNK` | — | — | latitude rows per radiation chunk (GPU memory; default 96 for the chunk loop, 192 for the RAD_FAST path; an explicit value sets both) |
 | `--rad-fast` | `RAD_FAST` | — | — | perf: radiation fast path (one lat chunk, SW on sunlit columns only, g-point batching, exact minor-gas scan, no cloud optics; window_gq too). Default auto (since 2026-11-23): on where validated (1 GPU, wet optics, RAD_SOLAR=window_gq, the normal solve), else the chunk loop, decided per radiation driver and stated in the header; 1 = force (refuses anything else); 0 = the chunk loop (the old default) |
 | `--rad-engine` | `RAD_ENGINE` | — | — | which engine solves the EVOLVED radiation call (rrtmgp = the physics, the only one in this repo) |
-| `--rad-ref-cache` | `RAD_REF_CACHE` | — | — | per-archive-hour cache of the reference-aerosol solve and the clear-sky fields (default inputs/cache/rad_ref; bit-identical on a hit, computes+stores on a miss; 0 = off) |
+| `--rad-ref-cache` | `RAD_REF_CACHE` | — | — | per-archive-hour cache of the reference-aerosol solve and the clear-sky fields (default inputs/cache/rad_ref; bit-identical on a hit, computes+stores on a miss; 0 = off; always off under MET_SRC=jcm_online) |
 | `--rad-sample-every` | `RAD_SAMPLE_EVERY` | — | — | write rad_sample_<TAG>_s<step>.npz (evolved bins, dT_rad, hour) every N radiation steps -- training data for a radiation emulator (0 = off) |
 
 ### memory / performance (cannot change results)

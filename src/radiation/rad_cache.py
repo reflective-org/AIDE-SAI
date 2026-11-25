@@ -86,8 +86,20 @@ def make_key(key_dict):
     return hashlib.sha1(s.encode()).hexdigest()[:12]
 
 
+# Met sources whose T is integrated live, not read from an archive: the
+# reference solve then depends on the run, not on the hour, so there is nothing
+# to cache per hour (2026-11-25, MANIFEST.md jcm_online entry). Matched against
+# the key's 'archive' entry, which met_jcm_online sets to 'jcm_online:<chain>'.
+LIVE_MET_ARCHIVE_PREFIXES = ('jcm_online:',)
+
+
 class RefCache:
     def __init__(self, root, key_dict, label='rad_ref'):
+        archive = str(dict(key_dict).get('archive', ''))
+        if archive.startswith(LIVE_MET_ARCHIVE_PREFIXES):
+            raise ValueError(f'rad_cache: no per-hour cache for a live met source '
+                             f'(archive {archive!r}): the reference solve depends '
+                             f'on the run, not on the hour')
         self.root = root
         self.key_dict = dict(key_dict)
         self.key = make_key(self.key_dict)
