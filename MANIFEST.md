@@ -761,13 +761,18 @@ any directory. What they take from the cwd is the checkpoint they read
   served the fast engine in the frozen AIDE-SAI-link-sens tree. At 1 the
   argument is not passed at all, so a default run is bit-identical and still
   builds on `0ba8f4b`, which lacks it. Otherwise it needs a tomas-jax checkout
-  whose `make_step` accepts it (branch `adaptive-coag-kernel-scale`):
-  `coupling.py` refuses at startup a checkout without it (dev only warns on an
-  unknown step argument and ignores it), a negative value, and `MICRO` other
-  than `full`; `driver_fast.py` refuses it under `MICRO_ENGINE=fast` (gpu-fast
+  whose `make_step` accepts it (PR #49 with the `coag_kernel_scale` commits,
+  or later): `coupling.py` refuses at startup a checkout without it (dev only
+  warns on an unknown step argument and ignores it), a value that is negative
+  or not finite, and `MICRO` other than `full`; `driver_fast.py` refuses it under `MICRO_ENGINE=fast` (gpu-fast
   `787c991` has no kernel scale). Echoed in the run header (`coag kernel
   x<scale>`) and stamped append-only in `PHYS_CFG` (`MICRO_COAG_SCALE`; implied
   1 for older checkpoints, so a scaled RESUME warns of the seam).
+  **Not yet runnable through the preset:** `cesm_adaptive_substep` and the
+  `models/tomas-jax-dev` gitlink still pin `0ba8f4b`, so `run_prod.py` refuses
+  any scale != 1 until the `coag_kernel_scale` commits are pushed to PR #49 and
+  the pin moves to that head (with its SHA here). A gitlink is never pinned to
+  an unpushed commit.
 
 - **Meteorology from one source, everything else from the climatology
   (2026-11-17; now in the presets).** Both presets set `BC_SRC=clim`: only

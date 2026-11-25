@@ -876,8 +876,11 @@ MICRO_FION = float(os.environ.get('MICRO_FION', '0'))
 # 787c991) has no kernel scale (driver_fast.py refuses), and a checkout whose
 # make_step lacks the kwarg is refused at startup (_check_coag_scale).
 MICRO_COAG_SCALE = float(os.environ.get('MICRO_COAG_SCALE', '1'))
-if not MICRO_COAG_SCALE >= 0.0:
-    raise SystemExit(f"coupling: MICRO_COAG_SCALE must be >= 0, got {MICRO_COAG_SCALE:g}")
+# finite and >= 0, as tomas-jax's check_coag_kernel_scale (so inf and NaN are
+# refused here, before the data are read, not at the first micro step)
+if not (np.isfinite(MICRO_COAG_SCALE) and MICRO_COAG_SCALE >= 0.0):
+    raise SystemExit(f"coupling: MICRO_COAG_SCALE must be finite and >= 0, "
+                     f"got {MICRO_COAG_SCALE:g}")
 if MICRO_COAG_SCALE != 1.0 and MICRO_MODE != 'full':
     raise SystemExit(f"coupling: MICRO_COAG_SCALE={MICRO_COAG_SCALE:g} needs MICRO=full "
                      f"(tomas-jax dev make_step); MICRO={MICRO_MODE} has no kernel scale")
@@ -899,9 +902,9 @@ def _check_coag_scale():
     if 'coag_kernel_scale' not in _ok:
         raise SystemExit(
             f"coupling: MICRO_COAG_SCALE={MICRO_COAG_SCALE:g} but the tomas-jax checkout "
-            f"at {TOMAS_JAX_PATH} has no make_step coag_kernel_scale. It needs tomas-jax "
-            f"branch adaptive-coag-kernel-scale (PR #49 adaptive-coag + coag_kernel_scale) "
-            f"or later; set MICRO_COAG_SCALE=1 to run this checkout.")
+            f"at {TOMAS_JAX_PATH} has no make_step coag_kernel_scale. It needs a tomas-jax "
+            f"whose make_step accepts coag_kernel_scale (PR #49 with the coag_kernel_scale "
+            f"commits, or later); set MICRO_COAG_SCALE=1 to run this checkout.")
 # MNFIX over only the out-of-range bins (dev's own default). Bit-identical to
 # trim=False and 5x faster here, although dev's docstring advises False under
 # vmap (measured 2026-11-18: 153 vs 30 ms per 20k-cell coag step).
