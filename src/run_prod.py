@@ -55,8 +55,10 @@ ADV_VPOS=1 -- VERTICAL POSITIVITY LIMITER, set by every preset. Without it the
   CREATES number.
 
 TO RESUME after a crash/kill: re-run with the same preset, tag and scenario plus
---resume 1. It picks up coupled_state_<TAG>_ckpt.npz (validated bit-exact). A
-RESUME onto a checkpoint with a different injection scenario or grid is refused.
+--resume 1. It picks up coupled_state_<TAG>_ckpt.npz: the aerosol and gas state
+of the resumed run is bit-identical to an uninterrupted one (2026-11-25, after the
+qfroz fix; MANIFEST.md). A RESUME onto a checkpoint with a different injection
+scenario or grid is refused.
 """
 import argparse
 import os
