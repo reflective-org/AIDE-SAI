@@ -871,7 +871,7 @@ MICRO_FION = float(os.environ.get('MICRO_FION', '0'))
 # solvers (make_step's runtime kwarg coag_kernel_scale, jit-traced). A
 # sensitivity knob for coagulation/nucleation tests (e.g. x0.5, x2); default 1 =
 # unchanged, and then the kwarg is not passed at all, so a default run stays
-# bit-identical and builds on checkouts without it (PR #49 head 0ba8f4b). Only
+# bit-identical and builds on checkouts without it (PR #49 before #51, e.g. 0ba8f4b). Only
 # MICRO=full with MICRO_ENGINE=full honours it: the fast engine (gpu-fast
 # 787c991) has no kernel scale (driver_fast.py refuses), and a checkout whose
 # make_step lacks the kwarg is refused at startup (_check_coag_scale).

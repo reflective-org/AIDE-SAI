@@ -129,7 +129,7 @@ belongs in the presets.
 never a vendored copy. A different version of a dependency — e.g. tomas-jax
 `dev` (`835ee24`) for `MICRO_ENGINE=full` — goes in as a SECOND submodule path
 plus a new preset whose `tomas-jax` slot points there; that is how a preset
-chooses its submodule. `models/tomas-jax-dev` (tomas-jax PR #49 head `0ba8f4b`,
+chooses its submodule. `models/tomas-jax-dev` (tomas-jax PR #49 head `328d64e`,
 branch `adaptive-coag`; 2026-11-25) is the first such path, pinned by
 `cesm_adaptive_substep`.
 `scripts/validation/test_configs.py` (in CI) checks that every preset parses
@@ -251,7 +251,7 @@ third submodule, `models/jcm-strat`, is needed only by `jcm_online_numerical`;
 | repo | required state | why | symptom if skipped |
 |---|---|---|---|
 | `models/tomas-jax` | `787c991`, branch `gpu-fast` | the `tomas_jax.fast` reduced model is the microphysics of both linkings (user decision 2026-11-18). `dev`'s `make_step` is built lazily, so `MICRO_ENGINE=full` fails only when used; `settling.h2so4_equilibrium_wt` falls back to `tomas_jax.fast.water` for the Tabazadeh fit | `cannot import tomas_jax.fast` from tomas_fast.py (and the pin check refuses first) |
-| `models/tomas-jax-dev` | `0ba8f4b`, branch `adaptive-coag` (tomas-jax PR #49: dev `835ee24` + 8 commits) | `cesm_adaptive_substep` only: `make_step(coag_solver='heun_adaptive', gas_substep='adaptive', cap_warnings=...)` and `TOMAS_SPECIES` exist from PR #49 on; it has no `tomas_jax.fast` | the pin check refuses that preset; the other presets do not need it |
+| `models/tomas-jax-dev` | `328d64e`, branch `adaptive-coag` (tomas-jax PR #49: dev `835ee24` + 8 commits + PR #51 `coag_kernel_scale`) | `cesm_adaptive_substep` only: `make_step(coag_solver='heun_adaptive', gas_substep='adaptive', cap_warnings=...)` and `TOMAS_SPECIES` exist from PR #49 on; it has no `tomas_jax.fast` | the pin check refuses that preset; the other presets do not need it |
 | `models/jax-rrtmgp` | `99d2d71` + `patches/jax-rrtmgp-zenith.patch` | `radiation.py` passes zenith per column, `(nlat, nlon, 1)`; upstream `sw_cell_source` assumes a scalar and broadcasts it against the `(nlat, nlon)` TOA flux | shape blow-up in the SW solve on the first `RAD=1` step |
 
 The patch is one hunk against `99d2d71` and is the only carried modification to
@@ -704,7 +704,7 @@ any directory. What they take from the cwd is the checkpoint they read
 
 - **Adaptive-sub-stepping microphysics, preset `cesm_adaptive_substep`
   (2026-11-25, user request).** The `full` chain above with tomas-jax PR #49
-  (`models/tomas-jax-dev`, `0ba8f4b`), configured as the PR's "Recommended
+  (`models/tomas-jax-dev`, `0ba8f4b`; now `328d64e`, see `MICRO_COAG_SCALE`), configured as the PR's "Recommended
   settings" (tomas-jax `docs/gas_substep.md`) and GPU benchmarks
   (`docs/gpu_deployment.md`). New knobs, all default off, so every other
   preset and a bare `MICRO=full` run is unchanged:
@@ -768,11 +768,17 @@ any directory. What they take from the cwd is the checkpoint they read
   `787c991` has no kernel scale). Echoed in the run header (`coag kernel
   x<scale>`) and stamped append-only in `PHYS_CFG` (`MICRO_COAG_SCALE`; implied
   1 for older checkpoints, so a scaled RESUME warns of the seam).
-  **Not yet runnable through the preset:** `cesm_adaptive_substep` and the
-  `models/tomas-jax-dev` gitlink still pin `0ba8f4b`, so `run_prod.py` refuses
-  any scale != 1 until the `coag_kernel_scale` commits are pushed to PR #49 and
-  the pin moves to that head (with its SHA here). A gitlink is never pinned to
-  an unpushed commit.
+  `cesm_adaptive_substep` and the `models/tomas-jax-dev` gitlink pin
+  `328d64e` (PR #49's `adaptive-coag` with PR #51 squash-merged; tree identical
+  to the tested `8476b38`). **Test** (`cesm_adaptive_substep`, 6 Tg/yr
+  +-30 deg, 55 hPa): x1 for 48 h is bit-identical in every output array to the
+  same run on `0ba8f4b` (only the new stamp differs), so the 2-year run
+  `adaptive_2yr_inj6_30NS` (on `0ba8f4b`) is a run of this pin at x1. At 216 h
+  vs x1 (the first 216 h of that run): x0.5 N +16.7 %, r_eff -10.9 %; x2
+  N -17.2 %, r_eff +11.7 %; M unchanged, H2SO4(g) -1.1/+1.6 %, AOD -0.9/+1.2 %;
+  no sub-step cap hit; budget closure <= 1.4e-15; micro 34-38 s/step at every
+  scale. (x2 stopped at 216 h: another job took its GPU and tripped
+  `MICRO_MAX_WALL`.)
 
 - **Meteorology from one source, everything else from the climatology
   (2026-11-17; now in the presets).** Both presets set `BC_SRC=clim`: only
