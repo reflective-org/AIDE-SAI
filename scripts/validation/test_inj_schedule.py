@@ -34,15 +34,19 @@ def refused(text):
 
 f = REPO / "inputs/injection/ccmi2022_sai_30NS_2030-2034.csv"
 r = S.load(f)
-check("shipped CCMI schedule parses (5 rows)", r.tolist() == [4.27, 5.15, 6.0, 6.39, 6.87])
+check("shipped CCMI schedule parses (5 rows)", r.tolist() == [3.81, 4.72, 5.6, 6.34, 6.7])
+r_ym = S.load(REPO / "inputs/injection/ccmi2022_sai_30NS_2030-2034_yearmean.csv")
+check("superseded year-mean schedule parses unchanged (runs/ccmi2030_inj)",
+      r_ym.tolist() == [4.27, 5.15, 6.0, 6.39, 6.87])
 Y = S.HOURS_PER_YEAR
 check("year 0 at hour 0 and at the last hour of the year",
-      S.rate_at(r, 0) == 4.27 and S.rate_at(r, Y - 1) == 4.27)
-check("steps to year 1 at hour 8760", S.rate_at(r, Y) == 5.15)
-check("last row held after the list ends", S.rate_at(r, 50 * Y) == 6.87)
+      S.rate_at(r, 0) == 3.81 and S.rate_at(r, Y - 1) == 3.81)
+check("steps to year 1 at hour 8760", S.rate_at(r, Y) == 4.72)
+check("last row held after the list ends", S.rate_at(r, 50 * Y) == 6.7)
 check("checksum is deterministic", S.checksum(r) == S.checksum(S.load(f)))
 check("checksum differs when one rate changes",
-      S.checksum(r) != S.checksum([4.27, 5.15, 6.0, 6.39, 6.88]))
+      S.checksum(r) != S.checksum([3.81, 4.72, 5.6, 6.34, 6.71]))
+check("checksum tells the two shipped schedules apart", S.checksum(r) != S.checksum(r_ym))
 check("checksum is exact in float64", float(int(S.checksum(r))) == S.checksum(r))
 check("bad header refused", refused("year,rate\n0,1\n"))
 check("gap in year_offset refused", refused("year_offset,tg_so2_yr\n0,1\n2,1\n"))

@@ -4,13 +4,15 @@
 # source_year: the calendar year of the reference the value is taken from (informational).
 #
 # Source: CCMI-2022 "SSP2-4.5 SAI" fully coupled CESM2-WACCM6 run, Tilmes et al. (2025),
-#   ACP 25, 6001-6023, doi:10.5194/acp-25-6001-2025, Fig. 2b. Ensemble mean of the two
-#   members, digitised from the published figure (read error ~0.3 Tg/yr; member spread up
-#   to 0.6 Tg/yr). In 2030-2034 all SO2 goes in at 30N and 30S (15N/15S = 0), 180 deg,
-#   ~75 hPa (18.1 km, Fig. 2a). Digitiser: AIDE-eval, AIDE-SAI/scripts/digitize_tilmes2025_fig2b.py.
+#   ACP 25, 6001-6023, doi:10.5194/acp-25-6001-2025, Fig. 2b, black (total) curve, mean of
+#   the two members, read AT the integer-year tick: the curves are polylines with one vertex
+#   per year there (read error ~0.3 Tg/yr). Twice the red (per-site 30N/30S) curve agrees
+#   within 0.04 Tg/yr. In 2030-2034 all SO2 goes in at 30N and 30S (15N/15S <= 0.2 per site),
+#   180 deg, ~75 hPa (18.1 km). Digitiser: AIDE-eval, AIDE-SAI/scripts/digitize_tilmes2025_fig2b.py.
+#   Supersedes ccmi2022_sai_30NS_2030-2034_yearmean.csv (2026-11-25).
 year_offset,tg_so2_yr,source_year
-0,4.27,2030
-1,5.15,2031
-2,6.00,2032
-3,6.39,2033
-4,6.87,2034
+0,3.81,2030
+1,4.72,2031
+2,5.60,2032
+3,6.34,2033
+4,6.70,2034
