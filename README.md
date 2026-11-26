@@ -30,8 +30,8 @@ microphysics are fully coupled to each other.
 Four steps on a machine with an NVIDIA GPU (tested on H100 80 GB) and Python 3.10+. The weights and the
 boundary climatology (~3.4 GB) come from Hugging Face: the microphysics network from
 [`reflective-org/AIDE-Microphysics`](https://huggingface.co/reflective-org/AIDE-Microphysics), the radiation and
-atmosphere emulators and the boundary climatology from `reflective-org/AIDE-SAI-emulator` (**not published yet**;
-until it is, step 3 gets the microphysics files and stops at the first missing one).
+atmosphere emulators and the boundary climatology from
+[`reflective-org/AIDE-SAI-emulator`](https://huggingface.co/reflective-org/AIDE-SAI-emulator).
 
 ```bash
 # 1. code, with the three submodules, and the one REQUIRED patch to jax-rrtmgp

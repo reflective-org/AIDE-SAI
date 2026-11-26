@@ -16,8 +16,8 @@ checkpoints it ran with in `runs/<TAG>/preset_snapshot.txt`.
 ## Weights and inputs
 
 `python3 scripts/get_assets.py` downloads everything the launchers need from Hugging Face into `assets/`
-(microphysics: `reflective-org/AIDE-Microphysics`, pinned commit; the rest: `AIDE_HF_REPO`, default
-`reflective-org/AIDE-SAI-emulator`) and checks each file against the sha256 pinned in the script;
+(microphysics: [`reflective-org/AIDE-Microphysics`](https://huggingface.co/reflective-org/AIDE-Microphysics), pinned commit; the rest: `AIDE_HF_REPO`, default
+[`reflective-org/AIDE-SAI-emulator`](https://huggingface.co/reflective-org/AIDE-SAI-emulator), pinned commit) and checks each file against the sha256 pinned in the script;
 `--met --gpu N` also builds the offline wind file (`assets/met_P2s200`, 92 GB) with `src/atmos/atmos_rollout.py`.
 The launchers resolve every path in `scripts/presets/_assets.sh`: an env var you set (`CLIM_FILE`, `MET_DIR`,
 `ATM_BUNDLE`, `EMU_CKPT`, `EMU_STUDENT`, `EMU_NORM`, `RADEM_CKPT`), else `assets/`, else the g405 location.

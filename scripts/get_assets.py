@@ -8,7 +8,7 @@
 Sources (each file pinned to an HF commit and a sha256 below; a mismatch stops with an error):
 
     reflective-org/AIDE-Microphysics   tomas40/cs_b/model.pt, tomas40/norm_stats.npz   microphysics student net
-    AIDE_HF_REPO (reflective-org/AIDE-SAI-emulator)
+    AIDE_HF_REPO (reflective-org/AIDE-SAI-emulator, https://huggingface.co/reflective-org/AIDE-SAI-emulator)
                                        radem_gen2/   radiation emulator (SW, LW, clear-sky damping nets)
                                        atmos_P2s200/ atmosphere emulator P2@200: weights, IC, QBO forcing, fixer
                                        bc_clim/      CESM monthly climatology of the boundary/chemistry fields
@@ -22,7 +22,8 @@ import argparse, hashlib, os, shutil, subprocess, sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MICRO = ('reflective-org/AIDE-Microphysics', '899026119d190f3893752f0625884e6d2922ab7a')
-SAI = (os.environ.get('AIDE_HF_REPO', 'reflective-org/AIDE-SAI-emulator'), os.environ.get('AIDE_HF_REVISION') or None)
+_SAI_REPO = os.environ.get('AIDE_HF_REPO', 'reflective-org/AIDE-SAI-emulator')   # the pin applies to the default repo only
+SAI = (_SAI_REPO, os.environ.get('AIDE_HF_REVISION') or ('80e40014e2e0ba9ff5f65e8960940f415b1429bf' if _SAI_REPO == 'reflective-org/AIDE-SAI-emulator' else None))
 
 # (hf repo, revision, path in the HF repo, path under assets/, sha256)
 FILES = [
