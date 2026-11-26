@@ -1,0 +1,9 @@
+{
+ "name": "cs_b",
+ "arch": "packtf",
+ "d": 256,
+ "nl": 4,
+ "pack": 4,
+ "heads": 4,
+ "ffm": 2
+}

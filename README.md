@@ -1,0 +1,412 @@
+# AIDE-SAI: emulator branch
+
+[![CI](https://github.com/reflective-org/AIDE-SAI/actions/workflows/ci.yml/badge.svg?branch=emulator)](https://github.com/reflective-org/AIDE-SAI/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green.svg)](./LICENSE)
+
+**CESM → TOMAS-JAX** sectional aerosol model for stratospheric aerosol injection
+(SAI), in JAX on GPU. The CESM forcing is one-way; aerosol, radiation and
+microphysics are fully coupled to each other.
+
+> [!IMPORTANT]
+> **The `emulator` / `linked_emulator` branches: what is emulated and what is not.**
+>
+> | process | in the `emulator` branch |
+> |---|---|
+> | meteorology (u, v, omega, T) | **emulated**: the JCM emulator P2@200 (T63, 95 levels, free-running, no nudging), rolled out once offline and regridded to the CESM f09 grid (`scripts/met/emu_to_met.py`). It does not respond to the aerosol. |
+> | microphysics | **emulated**: the cs_b student network, with TOMAS-fast physics on the top 0.3 % sulfur cells (`MICRO_ENGINE=emulator`). |
+> | **advection** | **NOT emulated.** Numerical semi-Lagrangian transport (`ADV_SCHEME=sl`, K=12, the default): the JCM/dinosaur SL kernel vendored in `src/advection/sl_core.py`, run on the f09 grid on the emulator's 6-h winds, with a flux-form vertical step, open faces and mass fixers. There is no learned transport. |
+> | radiation | `emulator`: **numerical**, RRTMGP with the window-integrated sun (`RAD_SOLAR=window_gq`, 3 nodes, window ending at the call hour). `linked_emulator`: **emulated** (radem gen2, trained on that window_gq solve; `RADEM_CKPT`, [docs/RADIATION_EMULATOR.md](./docs/RADIATION_EMULATOR.md)); only the Mie optics stay numerical. |
+> | aerosol heating | **into the microphysics temperature** (`RAD_MODE=anomaly`): T + dT_rad is what microphysics, settling and optics see. dT_rad is not advected and never reaches the winds -- a known inconsistency, kept on purpose for this version. |
+> | aerosol heating, `linked_atmosphere` | **into the atmosphere** (`RAD_MODE=feedback`, first pass): the P2@200 emulator runs live beside the aerosol model (`src/atmos/atm_live.py`) and adds the heating to its own T, so it is advected, damped and reaches the winds; `scripts/presets/linked_atmosphere.sh`. |
+>
+> Everything aerosol (transport, microphysics, radiation) runs on the CESM f09 grid over the 1.2-143 hPa band; only
+> the meteorology emulator runs on its own T63 grid. Launch with `scripts/presets/linked_aerosolheating.sh`
+> (`emulator`) or `scripts/presets/linked_emulator.sh` (`linked_emulator`, ~2.1 s per 6-h step) or `scripts/presets/linked_atmosphere.sh`; see
+> [docs/LINKED_VERSIONS.md](./docs/LINKED_VERSIONS.md).
+
+## Quick start: the linked versions (no CESM archive needed)
+
+Four steps on a machine with an NVIDIA GPU (tested on H100 80 GB) and Python 3.10+. The weights and the
+boundary climatology (~3.4 GB) come from Hugging Face: the microphysics network from
+[`reflective-org/AIDE-Microphysics`](https://huggingface.co/reflective-org/AIDE-Microphysics), the radiation and
+atmosphere emulators and the boundary climatology from `reflective-org/AIDE-SAI-emulator` (**not published yet**;
+until it is, step 3 gets the microphysics files and stops at the first missing one).
+
+```bash
+# 1. code, with the three submodules, and the one REQUIRED patch to jax-rrtmgp
+git clone --recurse-submodules -b emulator https://github.com/reflective-org/AIDE-SAI.git
+cd AIDE-SAI
+git -C models/jax-rrtmgp apply ../../patches/jax-rrtmgp-zenith.patch
+
+# 2. python packages (GPU jax wheel last)
+pip install -r requirements.txt
+pip install --upgrade "jax[cuda12]>=0.6.2"
+
+# 3. weights + boundary climatology -> assets/ (each file's sha256 is pinned in the script)
+python3 scripts/get_assets.py
+#    only for the presets that read offline winds (all but linked_atmosphere): build the 2-year wind
+#    file from the atmosphere emulator, 92 GB in assets/met_P2s200, ~35 min on one H100 (0.7 s x 2924 steps)
+python3 scripts/get_assets.py --met --gpu 0
+
+# 4. run: TAG, GPU, hours (6-h steps). Output in runs/TAG/ (run.log, coupled_*.npz, frames3d/)
+scripts/presets/linked_atmosphere.sh first_test 0 240        # 10 days, atmosphere live, heating feeds back
+scripts/presets/linked_emulator.sh   first_test_emu 0 240    # 10 days, offline winds
+```
+
+| launcher | what responds to the aerosol heating | needs |
+|---|---|---|
+| `linked_atmosphere.sh` | microphysics, optics **and the winds** (live atmosphere emulator) | assets |
+| `linked_emulator.sh` | microphysics and optics (heating stays where it is deposited); winds fixed | assets + `--met` |
+| `linked_aerosolheating.sh` | as `linked_emulator`, with physics radiation (RRTMGP) | assets + `--met` |
+| `linked_noheating.sh` | nothing (heating diagnosed only) | assets + `--met` |
+
+**Emulated vs numerical** (10 days, same winds and scenario, [docs/PERFORMANCE.md](./docs/PERFORMANCE.md)): 2.4 s vs
+22.0 s per 6-h step (9x; microphysics 24x, radiation ~90x), 1.0 h vs 8.9 h per simulated year on one H100. Number
+burden, AOD, r_eff and H2SO4 within 2 % of the numerical model from day 2 (number -7 % on day 1), sulfate mass
+within 0.01 %, heating (dT_rad) 2.6 % rms at day 10.
+
+Scenario knobs are env vars: `INJ_SO2=0` (control), `INJ_LAT`, `INJ_LON`, `INJ_HPA`, `ATM_SEED`. `FRAME3D=N` writes
+3-D output every N-th step. Runs go from 1997-01-01T06 in one piece (no restart for `linked_atmosphere`).
+
+Check a run: `tail runs/first_test/run.log` prints, every step, the burdens, r_eff, AOD, forcing and a mass budget that
+must close to round-off (`closure ~1e-16`). Details, caveats and every verification: [docs/LINKED_VERSIONS.md](./docs/LINKED_VERSIONS.md).
+The rest of this README is the CESM-forced model this grew from.
+
+> [!NOTE]
+> The wind file `--met` builds is the same emulator and recipe as the one the published runs used, but not the
+> same bytes: the u-fixer's summation order differs at a few ulp from frame 1, and the weather drifts apart from
+> there, so a run on it is a different realisation of the same model, not a replay of a published run.
+
+> [!NOTE]
+> CI covers what a GPU-less runner without the CESM archive can cover: that the
+> tree imports, that advection still conserves mass, and that the closed-form
+> settling physics is unchanged. The rest of the validation needs a GPU and the
+> CESM archive — see [docs/VALIDATION.md](./docs/VALIDATION.md).
+
+> [!WARNING]
+> This project is under active development, there is no guarantee that it will
+> operate as expected. In particular the model is **not calibrated for absolute
+> radiative forcing** — see the standing caveats in [MANIFEST.md](./MANIFEST.md)
+> before quoting any number from it.
+
+**What "one-way" does and does not mean.** CESM meteorology is prescribed: the
+winds are read hour by hour and nothing this model does ever changes them, so
+there is no dynamical response — no self-lofting, no altered Brewer-Dobson
+ascent — and nothing propagates back to CESM. *Inside* that forcing, though,
+the loop closes: the aerosol sets the optics, the optics heat the layer, and
+that heating accumulates into the temperature which the microphysics, the
+settling and the next radiation call all see. Aerosol in the band is internally
+generated and internally removed:
+
+```
+CESM h1 hourly ──► U, V, OMEGA ──────► transport (Lin-Rood flux-form)
+               ├─► T, p, RELHUM ─────► microphysics (TOMAS, 40 bins)
+               ├─► MAM4 num/so4 ─────► IC, open-BC reservoir, polar caps
+               └─► SO2, H2SO4 ───────► gas-phase IC/BC
+
+  SOURCE  continuous SO2 injection    SO2 ─OH─► H2SO4 ─► nucleation/condensation
+  SINK    gravitational settling out of the band bottom
+  OPTICS  RRTMGP + Mie on the wet H2SO4/H2O droplet ──► heating, AOD550, ARF_toa
+
+  CLOSED LOOP   aerosol ─► optics ─► heating ─► dT accumulates into T
+                    ▲                                    │
+                    └──── microphysics + settling ◄───────┘
+  NOT CLOSED    U, V, OMEGA are CESM's throughout; the circulation never responds
+```
+
+- **State**: 40 TOMAS bins × (number, dry SO4 mass) + 2 gas tracers = 82
+  advected 3-D fields, on the native CESM f09 grid (192 × 288) over a
+  1–150 hPa band (24 levels), 6 h coupling step.
+- **Scale**: a 90-day run is ~3.5 h on one H100 (34.9 s/step, measured over a
+  full year 2026-08-28); microphysics is ~47% of a step, radiation ~27%,
+  advection ~21%. Per-step cost is flat over a year.
+
+## Scope, and where this is going
+
+Read this as a **dycore–aerosol–radiation coupler**. **This version has CESM,
+TOMAS and RRTMGP plugged in**, and every number, default and validation on this
+page refers to that combination.
+
+The intent is for each slot to be swappable — other meteorology sources
+including emulated dycores, and other aerosol schemes (CARMA, MAM, GLOMAP).
+Some of that seam already exists: `AER_SRC` selects the aerosol IC/BC source
+(`mam4` or `carma`), and `driver_fast.py` swaps the microphysics engine into
+`coupling.py` at import rather than branching inside it — and since 2026-10-09
+that seam takes a second engine: `MICRO_ENGINE=emulator` replaces the
+`tomas_jax.fast` physics with a learned 6-hour operator (a transformer trained
+on that same physics), and `MICRO_REF=<other engine>` runs both on the same
+input for a per-step A/B. Since 2026-10-13 the emulator engine ships with
+its production configuration as defaults — the injection ring and the dense
+cells go to the physics, the gas chemistry is exact — and tracks the physics
+run to about 1 % for a month at a third of the stage's cost. See
+[docs/EMULATOR.md](./docs/EMULATOR.md) for the benchmark. The radiation seam
+has the same shape (2026-10-13): a per-hour cache serves the archive-only half
+of the stage bit-identically, and `RAD_ENGINE=emulator` replaces the remaining
+two-stream solve with two column networks on the cached clear sky (8.4 → 0.7
+s/step; `dT_rad` within 0.01 K zonal-mean of the physics over a month); see
+[docs/RADIATION.md](./docs/RADIATION.md). The meteorology reader is **not** generic yet — it expects the CESM
+`h1` layout — so treat a new forcing source as work, not configuration.
+
+## Installation
+
+Three dependencies are separate repos, not on PyPI. They are **git submodules**
+under `models/`, pinned to exact commits so a clone reconstructs the code that
+produced a result; override either with `TOMAS_JAX_PATH` / `RRTMGP_PATH`:
+
+| submodule | role | pinned at |
+|---|---|---|
+| [`models/tomas-jax`](https://github.com/reflective-org/tomas-jax) | sectional aerosol microphysics | `787c991`, branch **`gpu-fast`** — `main` has no `tomas_jax.fast` |
+| [`models/jax-rrtmgp`](https://github.com/climate-analytics-lab/jax-rrtmgp) | radiative transfer (`RAD=0` skips it) | `99d2d71`, **plus `patches/jax-rrtmgp-zenith.patch`** from this repo |
+| [`models/MAM4-JAX`](https://github.com/reflective-org/MAM4-JAX) | modal aerosol microphysics, `src/driver_mam4.py` only | `46f3cc7` (`main`); put it on the path with `export PYTHONPATH=$PWD/models/MAM4-JAX${PYTHONPATH:+:$PYTHONPATH}` |
+
+tomas-jax and jax-rrtmgp are not plain checkouts of their default branches:
+
+* **tomas-jax must be on `gpu-fast`.** `driver_fast.py` — the production entry
+  point — imports `tomas_jax.fast`, the batched reduced engine, which only
+  exists on that branch. On `main` the import fails outright.
+* **jax-rrtmgp needs the zenith patch.** `radiation.py` passes a per-column
+  solar zenith field, shape `(nlat, nlon, 1)`; upstream `sw_cell_source`
+  assumes a scalar and mis-broadcasts it against the `(nlat, nlon)` TOA flux.
+  The one-hunk fix is checked in here as
+  [`patches/jax-rrtmgp-zenith.patch`](./patches/jax-rrtmgp-zenith.patch) and is
+  needed for any `RAD=1` run.
+
+```bash
+git clone --recurse-submodules -b emulator https://github.com/reflective-org/AIDE-SAI.git
+cd AIDE-SAI
+
+# the zenith patch is REQUIRED SETUP, not an optional extra -- see below
+git -C models/jax-rrtmgp apply ../../patches/jax-rrtmgp-zenith.patch
+
+pip install -r requirements.txt
+pip install --upgrade "jax[cuda12]>=0.6.2"   # GPU wheel -- the CPU one cannot do production
+```
+
+In an existing clone, `git submodule update --init` populates `models/`.
+
+**Emulator weights are not in the repository.** The physics engines (`MICRO_ENGINE`
+default, `RAD_ENGINE` default) need nothing extra. `MICRO_ENGINE=emulator` needs the TOMAS
+emulator code and checkpoint (`EMU_CODE`, `EMU_ROOT`, `EMU_CKPT`), and `RAD_ENGINE=emulator`
+needs the radiation emulator weights (`RAD_EMU_CKPT`, default `inputs/rad_emulator/current`).
+They will be published separately; see `docs/CONFIGURATION.md` for the variables.
+
+**Why the patch is a separate step.** A submodule records a commit, and the
+zenith fix is not in any upstream commit — so `git submodule update` checks out
+pristine jax-rrtmgp and drops it. That failure is silent, not loud: without the
+fix the shortwave solver mis-broadcasts a `(nlat, nlon, 1)` zenith field against
+the `(nlat, nlon)` TOA flux, which on a square grid computes nonsense rather
+than raising. Confirm it took:
+
+```bash
+grep -q mu_2d models/jax-rrtmgp/rrtmgp/rte/monochromatic_two_stream.py && echo "zenith patch applied"
+```
+
+The patch is generated against the pinned commit `99d2d71`; `git apply` fails
+loudly rather than half-applying if the submodule is moved forward, in which
+case regenerate it. Do **not** activate the tomas-jax `.venv` — it is CPU-only
+jaxlib with no xarray. The working combination is system `python3` with the GPU
+jax wheel.
+
+Verify the install before touching CESM data. This is four checks, one per way
+the install goes wrong — the patch, the submodules, the tomas-jax commit, the
+jax wheel — and it resolves both repos exactly the way the model does, so it
+fails the same way a run would. Paste the whole block at once; the `python3 -c`
+line needs the script that follows it:
+
+```bash
+# your clone of this repo -- $PWD if you are standing where the block above ran.
+# models/ is located relative to this, so it does not have to be $HOME.
+REPO=$PWD
+export LD_LIBRARY_PATH=/run/nvidia/driver/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
+# netCDF4/HDF5 takes an NFS lock when it opens the CESM files; if the NFS lock
+# manager is wedged (seen 2026-10-14: a run sits forever at "opening ...nc" in
+# D state while `flock -s <file> -c true` times out), disable the lock -- the
+# data is read-only:
+export HDF5_USE_FILE_LOCKING=FALSE
+
+# 1. zenith patch applied? mu_2d exists only after it
+grep -q mu_2d $REPO/models/jax-rrtmgp/rrtmgp/rte/monochromatic_two_stream.py \
+  && echo "zenith patch applied"
+
+python3 -c "
+import sys; sys.path.insert(0, '$REPO')
+import radiation                      # 2. submodules populated: puts both repos on sys.path, imports rrtmgp + tomas-jax Mie
+from tomas_jax.fast import run_fast   # 3. right commit: tomas_jax.fast exists only on gpu-fast
+import jax; print('deps ok:', jax.devices())   # 4. GPU wheel loads
+"
+```
+
+A pass is two lines, `zenith patch applied` and `deps ok: [CudaDevice(id=0)]`,
+with nothing in between — checks 2 and 3 are silent unless they raise
+`ImportError`.
+
+The `export` is only needed to make check 4 pass in a bare shell: this box keeps
+`libcuda.so.1` outside the default search path, and `run_prod.py` prepends the
+same directory itself (see `CUDA_DRIVER_LIB` below). Adjust the path, or drop
+the line, on a normal CUDA install. Without it jax prints a `cuInit` error and
+reports `[CpuDevice(id=0)]` — harmless here, and *not* a failed check, but
+inside a run CPU means months instead of hours.
+
+**The CESM archive is ~23 TB, so it can't be bundled in a git repo.** The model
+reads 21 hourly `h1` variables — 14 for the coupling itself (`U V OMEGA T
+num_a{1,2,3} so4_a{1,2,3} SO2 H2SO4 OH RELHUM`) and, unless `RAD=0`, 7 more for
+radiation (`Q O3 CH4 FLDS FLNS FSDS FSNS`). Point `CESM_DIR` at an archive laid
+out as
+`$CESM_DIR/hour_1/$CESM_PREFIX.h1.<VAR>$CESM_SUF`. Reads are one hour × band
+levels at a time (~5.3 MB per variable-hour), so a subset is enough: ~3.6 GB for
+a 2-day test, ~160 GB for a 90-day run. Full variable list and units:
+[docs/COUPLING_VARIABLES.md](./docs/COUPLING_VARIABLES.md).
+
+**On the shared H100 box these runs were made on, set none of this.** The three
+defaults in `coupling.py` already resolve to the FWHIST archive under `/data`,
+which is readable by every account on the machine, so the install above is the
+whole setup and `run_prod.py` works as written. `CESM_DIR`/`CESM_PREFIX`/
+`CESM_SUF` matter only off that box. The one place any CESM path is built is
+`coupling.py` (`H1`); `radiation.py` is handed the opener rather than
+constructing paths of its own, so there is nothing else to repoint.
+
+CESM's own *internally calculated* aerosol radiative forcing is neither read nor
+needed: this model computes forcing from its own aerosol, through RRTMGP and its
+own Mie tables. The four flux fields above are surface boundary conditions only
+— `FLNS`/`FLDS` give the surface temperature and `FSDS`/`FSNS` the albedo.
+
+## Quick Start
+
+**Run from a directory that is not the repo.** Every output path is relative to
+the working directory, so that directory is where the run lands — and a single
+90-day run writes GBs of `.npz`. `run_prod.py` refuses to start with the repo
+itself as the working directory rather than let that happen silently.
+
+```bash
+REPO=$PWD/AIDE-SAI                 # wherever this clone lives -- must be ABSOLUTE, the next line cd's away
+RUNS=$PWD/sai_runs                 # anywhere BUT the repo
+mkdir -p "$RUNS" && cd "$RUNS"
+
+# 1-step smoke test: N_HOURS=6 is one 6 h coupling step, ~6 min on an H100.
+N_HOURS=6 OUT_TAG=smoke INJ_SO2_TG_YR=10 $REPO/src/run_prod.py
+python3 $REPO/scripts/utils/plot_run.py smoke               # -> smoke_{dashboard,filmstrip,sizedist,zonal}.png
+
+# the production scenario: 10 Tg SO2/yr equatorial ring, 90 days.
+# N_HOURS=2160 (2160 h / 6 h = 360 steps = 90 days) is run_prod.py's default,
+# so it is written out here only to make the run length explicit.
+N_HOURS=2160 INJ_SO2_TG_YR=10 OUT_TAG=prod90d $REPO/src/run_prod.py          # ~3.5 h on one H100
+RESUME=1 N_HOURS=2160 INJ_SO2_TG_YR=10 OUT_TAG=prod90d $REPO/src/run_prod.py # continue after a kill
+python3 $REPO/scripts/utils/plot_run.py prod90d
+
+# a full year is the same launcher with a longer clock (8760 h = 365 days, ~16 h)
+RESUME=1 N_HOURS=8760 INJ_SO2_TG_YR=10 OUT_TAG=prod1yr $REPO/src/run_prod.py
+
+# TRANSPORT-ONLY timing run: stages 2, 2b and 5 off, no injection, so only
+# advection and the boundary/polar stages are live. 48 h = 8 steps, ~100 s.
+# FRAME_EVERY is set to the run LENGTH, not 0 -- FRAME_EVERY_STEPS is
+# max(1, FRAME_EVERY/STEP_HOURS), so 0 would mean a frame EVERY step.
+MICRO=off RAD=0 SETTLE=0 STATE_CKPT=0 FRAME_EVERY=48 N_HOURS=48 \
+  OUT_TAG=speed-benchmark $REPO/src/run_prod.py
+```
+
+Run length is set **in hours**, always: `N_HOURS` counts forcing hours from
+`H0`, and the model takes one coupling step every `STEP_HOURS` (6). So
+`N_HOURS=6` is one step, `N_HOURS=48` is two days, `N_HOURS=2160` is the 90-day
+production run. `N_DAYS` exists only as the fallback that supplies `N_HOURS`
+when it is unset (`N_HOURS = 24 × N_DAYS`, default 2 days) — for anything
+scripted, set `N_HOURS`.
+
+**What one step does.** Every coupling step walks the same stage list, in order:
+
+| # | Stage | Off when |
+|---|---|---|
+| 0 | SAI source — SO2 into the injection cells | `INJ_SO2_TG_YR=0` |
+| 1 | Transport — all 82 tracers on shared winds | — |
+| 2 | Microphysics — chemistry, nucleation, coagulation, condensation | `MICRO=off` |
+| 2b | Settling — the one true aerosol sink | `SETTLE=0` |
+| 3, 4, 4a | Vertical BC, polar caps, open-face reservoir refresh | — |
+| 5 | Radiation — evolved bins → heating → prognostic `dT` | `RAD=0` |
+
+Stages 4 and 5 write state consumed by the **next** step (the frozen advection
+target, and the `dT` the next microphysics sees), so the polar caps and the
+aerosol → radiation → temperature loop close across the step boundary rather
+than within it. `docs/PROCESSES.md` §0 has the full ordering rationale, the
+three nested meanings of "step" (coupling step / advection substep / micro inner
+step), and how to read a `PROFILE=1` breakdown.
+
+Switching stages off is how a run is narrowed to one process — `MICRO=off
+RAD=0 SETTLE=0` with no injection leaves transport, which is the timing run in
+the block above. `MICRO=off` is a benchmark/diagnostic mode, not a physics
+configuration: the aerosol moves but never evolves.
+
+`run_prod.py` sets the whole production environment (GPU pin, `libcuda` path,
+memory policy) and execs `driver_fast.py` from its own tree — so it always runs
+the code you just edited, wherever you launched it from. **A bare `run_prod.py`
+is a no-injection control** — `INJ_SO2_TG_YR` defaults to 0 so a forgotten flag
+gives an obviously unforced baseline rather than a silent SAI result. Always
+pair a scenario with its own `OUT_TAG`; outputs and checkpoints are keyed by it,
+and reusing a tag overwrites the other scenario's results — including across two
+checkouts launched from the same runs directory.
+
+Each run writes, into the launch directory:
+
+| file | what |
+|---|---|
+| `coupled_final_<TAG>.npz` | full 3-D prognostic state at the end of the run |
+| `coupled_frames_<TAG>.npz` | probe-level snapshots every `FRAME_EVERY` hours |
+| `coupled_timeseries_<TAG>.npz` | per-step scalar diagnostics (burdens, AOD550, ARF) |
+| `coupled_state_<TAG>_ckpt.npz` | restart checkpoint (+ `_frames_`/`_timeseries_` twins) |
+
+Then `python3 scripts/utils/plot_run.py <TAG>` writes the four figures and
+`python3 scripts/utils/gif_run.py <TAG> [--fps 8] [--width 900]` animates the filmstrip
+panels. Both read `coupled_*_<TAG>.npz` from the **current working directory**.
+
+## Configuration
+
+Every knob is an environment variable, read **once at module import** and echoed
+in the run header, so any log is self-describing. Set them by prefixing the
+launcher:
+
+```bash
+OUT_TAG=inj20_30N INJ_SO2_TG_YR=20 INJ_LAT=30 INJ_MIRROR=1 $REPO/src/run_prod.py
+```
+
+**The complete reference is [docs/CONFIGURATION.md](./docs/CONFIGURATION.md)** —
+every variable, its production default, and which ones your run actually reads
+(that last part matters: most knobs are inert for any given run, since
+`run_prod.py` swaps in the fast microphysics engine and the per-cell chain's
+knobs are then never reached).
+
+For a first run you need at most five variables. The rest have production
+defaults for a reason — change them only with `MANIFEST.md` open.
+
+| you want to | set |
+|---|---|
+| run the standard scenario | `OUT_TAG=<name> INJ_SO2_TG_YR=10 N_HOURS=2160 $REPO/src/run_prod.py` |
+| run its control | the same, minus `INJ_SO2_TG_YR` (it defaults to 0) |
+| continue after a kill or crash | add `RESUME=1`, and **repeat the same `INJ_*` and `OUT_TAG`** |
+| move the injection | `INJ_HPA`, `INJ_LAT` (+ `INJ_MIRROR=1` for a two-hemisphere ring) |
+| share the GPU / recover from an OOM | `FAST_SORT=0` first; then `TRACER_CHUNK` (advection) or `RAD_LAT_CHUNK` (radiation), whichever phase OOMed |
+| do a cheap dynamics-only test | `RAD=0` (drops the `jax-rrtmgp` dependency too) |
+
+> [!IMPORTANT]
+> `run_prod.py` **hard-sets** seven variables (`INIT_BIN`, `STATE_CKPT`,
+> `FRAME_EVERY`, `FAST_CELL_CAP`, `ADV_VPOS`, `DEBUG`, `PROFILE`). Passing those
+> on the command line is *silently ignored* — see
+> [docs/CONFIGURATION.md](./docs/CONFIGURATION.md) for how to override them.
+
+Every default, and the reasoning behind it, is in
+**[MANIFEST.md](./MANIFEST.md) — the canonical reference for this tree.** Where
+`docs/` disagrees with it, MANIFEST is current.
+
+## Citations
+
+The parameterizations this model composes are other people's work:
+
+- Lin & Rood (1996), *Mon. Weather Rev.* 124, 2046 — flux-form advection
+- Adams & Seinfeld (2002), *J. Geophys. Res.* 107, 4370 — TOMAS sectional aerosol
+- Tabazadeh et al. (1997), *Geophys. Res. Lett.* 24, 1931 — H2SO4/H2O equilibrium composition
+- Tang (1997), *J. Geophys. Res.* 102, 1883 — solution density
+- Palmer & Williams (1975), *Appl. Opt.* 14, 208 — H2SO4 refractive indices (via HITRAN Aerosols-2016)
+- Pincus et al. (2019), *J. Adv. Model. Earth Syst.* 11, 3074 — RRTMGP
+- Hanisco et al. (2001), *Geophys. Res. Lett.* 28, 4423 — the diurnal OH curve
+
+## License
+
+This project is released under the Apache 2.0 License - see the [LICENSE](./LICENSE) file for details.

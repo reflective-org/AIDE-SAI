@@ -1,0 +1,39 @@
+# This CITATION.cff file was generated with cffinit.
+# Visit https://bit.ly/cffinit to generate yours today!
+cff-version: 1.2.0
+title: 'AIDE-SAI-link: a CESM-forced TOMAS-JAX sectional aerosol model with interactive aerosol-radiation-microphysics coupling for stratospheric aerosol injection'
+abstract: >-
+  A GPU (JAX) sectional stratospheric aerosol model forced by prescribed CESM
+  meteorology. Carries 40 TOMAS size bins in two moments plus SO2 and H2SO4,
+  with continuous SO2 injection, SO2-OH chemistry, nucleation, condensation,
+  Brownian coagulation, gravitational settling through an open band bottom,
+  Lin-Rood flux-form transport, and RRTMGP radiative transfer with Mie optics
+  on the wet H2SO4/H2O droplet. Aerosol, radiation and microphysics are
+  interactively coupled: radiative heating from the model's own aerosol
+  accumulates into the temperature seen by the microphysics, by settling, and
+  by the next radiation call. The forcing is one-way only with respect to the
+  meteorology - the winds are prescribed, so the circulation does not respond.
+message: >-
+  If you use this software, please cite it using the
+  metadata from this file.
+type: software
+authors:
+  - name: Reflective
+    address: 26 Pier Annex
+    city: San Francisco
+    country: US
+    post-code: '94105'
+    website: 'https://www.reflective.org'
+    email: media@reflective.org
+repository-code: 'https://github.com/reflective-org/AIDE-SAI'
+keywords:
+  - stratospheric aerosol injection
+  - solar radiation modification
+  - sectional aerosol microphysics
+  - TOMAS
+  - CESM
+  - JAX
+  - radiative transfer
+  - RRTMGP
+license: Apache-2.0
+date-released: '' # Add date of release here
