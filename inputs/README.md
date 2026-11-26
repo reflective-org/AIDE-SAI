@@ -29,9 +29,9 @@ injection of the CCMI-2022 "SSP2-4.5 SAI" CESM2-WACCM6 run for 2030-2034, all at
 30N/30S in those years, digitised from Tilmes et al. (2025), ACP 25, 6001,
 Fig. 2b at the integer-year ticks (read error ~0.3 Tg/yr). Use with
 `--inj-lat 30 --inj-mirror 1 --inj-zonal 0 --inj-lon 180 --inj-hpa 75`.
-`ccmi2022_sai_30NS_2030-2034_yearmean.csv`: the first reading, superseded (each
-value is about the mean of years Y and Y+1, ~10 % high); kept for
-`runs/ccmi2030_inj` and as a rate-sensitivity case.
+`ccmi2022_sai_30NS_2027-2034.csv`: the same with 2027-2029 prepended as spin-up
+(2.13, 2.29, 2.72), so that the aerosol in 2030 includes the earlier injection
+as in CCMI; same options.
 
 ## `cache/` (gitignored)
 

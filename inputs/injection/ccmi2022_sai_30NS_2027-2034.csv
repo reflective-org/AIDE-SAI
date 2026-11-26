@@ -1,0 +1,23 @@
+# SO2 injection schedule, read by INJ_SO2_SCHED_FILE (src/inj_schedule.py).
+# year_offset: model year counted from the run start (365-day noleap years, hour 0 = H0).
+# tg_so2_yr:   TOTAL SO2 release in that year (Tg SO2/yr), split as INJ_MIRROR/INJ_ZONAL say.
+# source_year: the calendar year of the reference the value is taken from (informational).
+#
+# Source: CCMI-2022 "SSP2-4.5 SAI" fully coupled CESM2-WACCM6 run, Tilmes et al. (2025),
+#   ACP 25, 6001-6023, doi:10.5194/acp-25-6001-2025, Fig. 2b, black (total) curve, mean of
+#   the two members, read AT the integer-year tick: the curves are polylines with one vertex
+#   per year there (read error ~0.3 Tg/yr). Twice the red (per-site 30N/30S) curve agrees
+#   within 0.04 Tg/yr. In 2027-2034 all SO2 goes in at 30N and 30S (15N/15S <= 0.2 per site),
+#   180 deg, ~75 hPa (18.1 km). Digitiser: AIDE-eval, AIDE-SAI/scripts/digitize_tilmes2025_fig2b.py.
+#   Rows 0-2 (2027-2029) are spin-up: CCMI 2030 carries aerosol from the injection before 2030
+#   (with a 1-yr e-folding, 2027-2029 give ~97 % of the 1 Jan 2030 burden). Rows 3-7 equal
+#   ccmi2022_sai_30NS_2030-2034.csv. Member spread 2027-2029: 2.03-2.14, 2.00-2.59, 2.59-3.36.
+year_offset,tg_so2_yr,source_year
+0,2.13,2027
+1,2.29,2028
+2,2.72,2029
+3,3.81,2030
+4,4.72,2031
+5,5.60,2032
+6,6.34,2033
+7,6.70,2034

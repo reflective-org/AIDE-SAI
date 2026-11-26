@@ -6,15 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **CCMI schedule with spin-up, `inputs/injection/ccmi2022_sai_30NS_2027-2034.csv`.**
+  2.13, 2.29, 2.72 Tg SO2/yr for 2027-2029 (spin-up), then the 2030-2034 rates.
+  CCMI 2030 carries aerosol from the injection before 2030; starting in 2027
+  covers ~97 % of the 1 Jan 2030 burden (1-yr e-folding). Same source and
+  reading as the 2030-2034 file. CI: `test_inj_schedule.py`.
+
 ### Fixed
 
 - **CCMI 2030-2034 injection rates read at the year vertex.**
   `inputs/injection/ccmi2022_sai_30NS_2030-2034.csv` is now 3.81, 4.72, 5.60,
   6.34, 6.70 Tg SO2/yr (was 4.27, 5.15, 6.00, 6.39, 6.87). Fig. 2b of Tilmes et
   al. (2025) has one vertex per year at the integer-year tick; the first reading
-  averaged the curve over [Y, Y+1), about the mean of years Y and Y+1. The old
-  values move to `ccmi2022_sai_30NS_2030-2034_yearmean.csv` (used by
-  `runs/ccmi2030_inj`; a RESUME of it must point there).
+  averaged the curve over [Y, Y+1), about the mean of years Y and Y+1. The runs
+  made with the old values (`ccmi2030_*`) were stopped and deleted; the old file
+  is not kept.
 - **RESUME no longer leaves a seam.** The advection's boundary values
   (`qfroz`: polar-cap freeze target, open-face inflow) were not checkpointed,
   so the first resumed step used the hour-0 (January) values: in
